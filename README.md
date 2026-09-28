@@ -347,7 +347,7 @@ The suite covers number/amount/date/period/name parsing, noisy OCR text, table a
 
 Current result: **45/45 fields and statuses correct.** Regenerate the bills with `python scripts/generate_sample_bills.py`.
 
-**Real reference bills** (in `sample_bills/private/`, git-ignored):
+**Real reference bills** (verified during development; the files are not kept in the project, so add your own to `sample_bills/private/` to re-run them):
 
 | File | Utility | Result |
 |---|---|---|
@@ -373,6 +373,7 @@ Current result: **45/45 fields and statuses correct.** Regenerate the bills with
 | `venv\Scripts\activate` is blocked | `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` |
 | `ModuleNotFoundError: app` when running alembic or scripts | Run commands from the `electricity_bill_ocr` folder with the venv activated. |
 | A field is `null` but visible on the bill | Open the raw OCR text. If the text is right, the label is probably unknown: add it to `parsing/aliases.py` or `LABEL_ALIASES_FILE`. If the text is garbled, try a sharper scan (≥ 300 DPI) or `OCR_PREPROCESS_MODE=binary`. |
+| On the hosted app, a scanned bill fails with `ocr_failed` / "OCR timed out" | The free server's CPU is much slower than a PC. The Dockerfile already runs Tesseract single-threaded with a 300 s timeout. Check the Render logs for `OCR pass variant=... took Ns`; if it is still too slow, set `OCR_PREPROCESS_MODE=binary` (one pass) or `PDF_RENDER_DPI=200` in Render → Environment. |
 | Very slow OCR | Scanned PDFs take ~2–3 s per page. Reduce `PDF_RENDER_DPI` to 200, or set `OCR_PREPROCESS_MODE=light` (one OCR pass instead of two). |
 | Port 8000 in use | `$env:PORT=8001; python run.py` |
 

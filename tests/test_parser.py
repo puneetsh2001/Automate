@@ -254,3 +254,24 @@ def test_deskew_levels_rotated_page():
     rotated = img.rotate(2.0, expand=False, fillcolor=255)
     assert abs(estimate_skew(np.asarray(rotated)) + 2.0) <= 0.3
     assert abs(estimate_skew(np.asarray(img))) <= 0.2
+
+
+def test_slow_host_skips_second_ocr_pass(monkeypatch):
+    """On a throttled CPU the binary pass is skipped once the first pass used half the timeout."""
+    from PIL import Image
+
+    from app.core.config import get_settings
+    from app.services.ocr_service import OCRProvider, OCRResult, OCRService
+    from app.utils.text_layout import Word
+
+    class FakeProvider(OCRProvider):
+        calls = 0
+
+        def recognize(self, image):
+            FakeProvider.calls += 1
+            return OCRResult(text="x", words=[Word("Units", 0, 0, 10, 10, 90.0)], mean_confidence=90.0)
+
+    settings = get_settings().model_copy(update={"OCR_TIMEOUT_SECONDS": 0, "OCR_PREPROCESS_MODE": "auto"})
+    result = OCRService(FakeProvider(), settings).extract(Image.new("L", (200, 100), 255))
+    assert FakeProvider.calls == 1
+    assert result.preprocessing == "light"

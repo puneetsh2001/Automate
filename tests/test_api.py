@@ -199,3 +199,19 @@ def test_image_upload_ocr(client, fmt, name, ctype):
     assert bill["units_consumed"] == 150
     assert bill["net_amount_due"] == 1234.0
     assert bill["validation_status"] == "VALID"
+
+
+def test_ocr_errors_are_not_masked_as_generic_pdf_errors(client, monkeypatch):
+    """Regression: an OCR timeout on a scanned PDF page was reported as 'Failed to read PDF page 1'."""
+    from app.core.exceptions import OCRProcessingError
+    from app.services.ocr_service import OCRService
+
+    def slow_ocr(self, image):
+        raise OCRProcessingError("OCR timed out after 300s")
+
+    monkeypatch.setattr(OCRService, "extract", slow_ocr)
+    doc = fitz.open()
+    doc.new_page()  # blank page: no text layer, so it goes to OCR
+    r = upload(client, "scan.pdf", doc.tobytes(), "application/pdf")
+    assert r.status_code == 500
+    assert r.json() == {"error": "ocr_failed", "message": "OCR timed out after 300s"}

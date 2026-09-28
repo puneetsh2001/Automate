@@ -15,7 +15,7 @@ import fitz  # PyMuPDF
 from PIL import Image, UnidentifiedImageError
 
 from app.core.config import Settings, get_settings
-from app.core.exceptions import DocumentProcessingError
+from app.core.exceptions import BillOCRError, DocumentProcessingError
 from app.services.ocr_service import OCRService, get_ocr_service
 from app.utils.text_layout import Word, words_to_text
 
@@ -106,9 +106,11 @@ class DocumentProcessor:
             for index, page in enumerate(pdf, start=1):
                 try:
                     pages.append(self._process_pdf_page(page, index))
-                except DocumentProcessingError:
+                except BillOCRError:
+                    # OCR timeouts / Tesseract unavailable keep their own message and status
                     raise
                 except Exception as exc:
+                    logger.exception("Unexpected error reading PDF page %d", index)
                     raise DocumentProcessingError(f"Failed to read PDF page {index}.") from exc
             return DocumentText(pages=pages)
 

@@ -24,8 +24,12 @@ COPY frontend ./frontend
 RUN useradd --create-home --uid 1000 appuser && mkdir -p uploads && chown appuser:appuser uploads
 USER appuser
 
+# Free-tier hosts give a fraction of one CPU: multi-threaded Tesseract then spends its CPU
+# quota on thread contention, so run it single-threaded and allow slow scanned pages time.
 ENV ENVIRONMENT=production \
-    PORT=8000
+    PORT=8000 \
+    OMP_THREAD_LIMIT=1 \
+    OCR_TIMEOUT_SECONDS=300
 EXPOSE 8000
 
 # Apply database migrations, then serve. Render injects $PORT.

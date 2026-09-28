@@ -18,7 +18,7 @@ from PIL import Image
 
 from app.core.config import Settings, get_settings
 from app.core.exceptions import OCRProcessingError, OCRUnavailableError
-from app.services.image_preprocessing import PIPELINES
+from app.services.image_preprocessing import PIPELINES, binarize
 from app.utils.text_layout import Word, words_to_text
 
 logger = logging.getLogger(__name__)
@@ -136,12 +136,25 @@ class OCRService:
         variants = ["light", "binary"] if mode == "auto" else [mode]
         start = time.perf_counter()
         best: OCRResult | None = None
+        light = None
         for variant in variants:
-            processed = PIPELINES[variant](image)
+            elapsed = time.perf_counter() - start
+            if best is not None and best.words and elapsed > self.settings.OCR_TIMEOUT_SECONDS / 2:
+                # Slow host (e.g. a throttled free-tier CPU): keep the usable first result
+                logger.info("Skipping OCR variant=%s: first pass already took %.1fs", variant, elapsed)
+                break
+            pass_start = time.perf_counter()
+            if variant == "binary" and light is not None:
+                processed = binarize(light)  # reuse the light pipeline output instead of redoing it
+            else:
+                processed = PIPELINES[variant](image)
+                if variant == "light":
+                    light = processed
             result = self.provider.recognize(processed)
             result.preprocessing = variant
-            logger.debug("OCR variant=%s words=%d conf=%s score=%.0f",
-                         variant, len(result.words), result.mean_confidence, result.score)
+            logger.info("OCR pass variant=%s took %.1fs (words=%d, mean_conf=%s, score=%.0f)",
+                        variant, time.perf_counter() - pass_start, len(result.words),
+                        result.mean_confidence, result.score)
             if best is None or result.score > best.score:
                 best = result
         assert best is not None
