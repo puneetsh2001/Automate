@@ -1,0 +1,17 @@
+# Keep the image small and never ship secrets or customer bills
+.git
+venv/
+.venv/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.env
+*.db
+uploads/*
+sample_bills/
+tests/
+scripts/
+pytest.ini
+requirements-dev.txt
+render.yaml
+README.md

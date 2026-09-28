@@ -1,0 +1,14 @@
+{
+  "consumer_name": "PRIYA NAIR",
+  "account_number": "0098765432",
+  "billing_period": "2025-04-15 to 2025-05-14",
+  "billing_period_start": "2025-04-15",
+  "billing_period_end": "2025-05-14",
+  "due_date": null,
+  "previous_reading": 2110.5,
+  "current_reading": 2238.5,
+  "units_consumed": 128,
+  "net_amount_due": 1045.75,
+  "validation_status": "WARNING",
+  "extraction_method": "ocr"
+}

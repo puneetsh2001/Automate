@@ -1,0 +1,14 @@
+{
+  "consumer_name": "ANITA DESAI",
+  "account_number": "300045612",
+  "billing_period": "2025-03-01 to 2025-03-31",
+  "billing_period_start": "2025-03-01",
+  "billing_period_end": "2025-03-31",
+  "due_date": "2025-04-18",
+  "previous_reading": 15600,
+  "current_reading": 15815,
+  "units_consumed": 215,
+  "net_amount_due": 1519.0,
+  "validation_status": "VALID",
+  "extraction_method": "mixed"
+}

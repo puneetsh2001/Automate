@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Electricity Bill OCR</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>Electricity Bill OCR</h1>
+    <nav>
+      <span id="health" class="health" title="Service health">checking…</span>
+      <a href="/docs" target="_blank" rel="noopener">API docs</a>
+    </nav>
+  </header>
+
+  <main>
+    <section class="card">
+      <h2>Upload a bill</h2>
+      <form id="upload-form">
+        <label id="dropzone" class="dropzone" for="file-input">
+          <input id="file-input" type="file" name="file" accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg">
+          <span id="dropzone-text">Drag &amp; drop a PDF, PNG or JPG here, or <u>browse</u></span>
+        </label>
+        <button id="upload-btn" type="submit" disabled>Upload &amp; extract</button>
+      </form>
+
+      <ol id="steps" class="steps" hidden>
+        <li data-step="upload">Uploading &amp; processing…</li>
+        <li data-step="ocr">OCR completed</li>
+        <li data-step="extract">Data extraction completed</li>
+        <li data-step="validate">Validation completed</li>
+      </ol>
+
+      <div id="error" class="alert alert-error" role="alert" hidden></div>
+    </section>
+
+    <section id="result" class="card" hidden>
+      <div class="result-head">
+        <h2>Extracted data</h2>
+        <span id="status-badge" class="badge"></span>
+      </div>
+      <p id="result-meta" class="muted"></p>
+
+      <table class="fields">
+        <tbody id="fields-body"></tbody>
+      </table>
+
+      <div id="meter-check" class="meter-check"></div>
+
+      <div id="notes" class="alert alert-info" hidden>
+        <strong>How values were derived</strong>
+        <ul id="notes-list"></ul>
+      </div>
+
+      <div id="warnings" class="alert alert-warning" hidden>
+        <strong>Warnings</strong>
+        <ul id="warnings-list"></ul>
+      </div>
+
+      <details class="raw">
+        <summary>Raw OCR text (debug)</summary>
+        <pre id="raw-text"></pre>
+      </details>
+    </section>
+
+    <section class="card">
+      <div class="result-head">
+        <h2>Recent bills</h2>
+        <button id="refresh-btn" type="button" class="secondary">Refresh</button>
+      </div>
+      <div class="table-wrap">
+        <table class="history">
+          <thead>
+            <tr>
+              <th>ID</th><th>File</th><th>Consumer</th><th>Account</th><th>Period</th>
+              <th class="num">Units</th><th class="num">Amount (₹)</th><th>Status</th><th></th>
+            </tr>
+          </thead>
+          <tbody id="history-body">
+            <tr><td colspan="9" class="muted">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

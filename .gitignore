@@ -1,0 +1,13 @@
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.env
+*.db
+*.sqlite3
+uploads/*
+!uploads/.gitkeep
+# Real customer bills contain personal data - never commit them
+sample_bills/private/*
+!sample_bills/private/.gitkeep

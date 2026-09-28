@@ -1,0 +1,19 @@
+# Render Blueprint: https://render.com/docs/blueprint-spec
+# Render -> New -> Blueprint -> pick this repository. You'll be asked for DATABASE_URL (Neon connection string).
+services:
+  - type: web
+    name: electricity-bill-ocr
+    runtime: docker
+    plan: free
+    region: singapore          # closest Render region to India; create the Neon DB in AWS Singapore too
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: DATABASE_URL      # postgresql://user:password@ep-....aws.neon.tech/neondb?sslmode=require
+        sync: false            # secret: entered in the Render dashboard, never committed
+      - key: ENVIRONMENT
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
+      - key: MAX_UPLOAD_SIZE_MB
+        value: "10"

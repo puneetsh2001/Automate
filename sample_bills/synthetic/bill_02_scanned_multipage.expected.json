@@ -1,0 +1,14 @@
+{
+  "consumer_name": "SUNITA DEVI",
+  "account_number": "210345678901",
+  "billing_period": "May 2025",
+  "billing_period_start": null,
+  "billing_period_end": null,
+  "due_date": "2025-06-20",
+  "previous_reading": 4870,
+  "current_reading": 5320,
+  "units_consumed": 450,
+  "net_amount_due": 3812.0,
+  "validation_status": "VALID",
+  "extraction_method": "ocr"
+}
