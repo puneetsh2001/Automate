@@ -49,6 +49,8 @@ def test_parse_number(raw, expected):
     ("& 5,126.00", Decimal("5126.00")),      # OCR junk for the rupee sign
     ("% 5,126.00", Decimal("5126.00")),
     ("-1,200.00", Decimal("-1200.00")),      # credit balance keeps its sign
+    ("® 26,35,910.00", Decimal("2635910.00")),  # OCR reads '₹' as any symbol
+    ("I 18,76,540.00", Decimal("1876540.00")),  # font without a '₹' glyph
     ("2450.505", None),                      # 3 decimals -> not a money value
     ("Rs.", None),
 ])
@@ -91,6 +93,13 @@ def test_parse_account_number_keeps_leading_zeros_and_fixes_ocr():
     assert parse_account_number("17OO12345678") == "170012345678"
     assert parse_account_number("ABCDEF") is None
     assert parse_account_number("") is None
+
+
+def test_parse_account_number_accepts_structured_alphanumeric_ids():
+    assert parse_account_number("CSPEC-HT-784521") == "CSPEC-HT-784521"
+    assert parse_account_number("WGESC/IND/552190") == "WGESC/IND/552190"
+    assert parse_account_number("HT-5") is None             # too few digits
+    assert parse_account_number("HT-MTR-AB12") is None      # no numeric part
 
 
 def test_parse_name_rejects_labels():
@@ -221,6 +230,184 @@ def test_extra_aliases_file(tmp_path):
     bill = parser.parse("Meter Account Ref : 99887766\nPay Till : 01/07/2025\n")
     assert bill.account_number == "99887766"
     assert bill.due_date == date(2025, 7, 1)
+
+
+# ------------------------------------------ layouts of generated HT bills
+# Tesseract output of a bill image: no ':' after labels, '₹' read as "(2)" / "=".
+OCR_IMAGE_BILL = """
+                           Central State Power & Electricity Corporation
+                                                  HT ELECTRICITY ENERGY BILL
+ Consumer Name                  Example Steel Manufacturing Pvt. Ltd
+ Account Number                  CSPEC-HT-700001
+ Billing Period                  01 Aug 2026 - 31 Aug 2026
+ Due Date                        15 Sep 2026
+ Tariff Category                 HT-I Industrial
+METER READING / CONSUMPTION DETAILS
+                         Particulars                                Previous                Current              Units Consumed
+                         Main Meter                                 100,000                112,500                 12,500 kWh
+CHARGES SUMMARY
+ Energy Charges                                                 12,500 kWh                Variable                      1500000.00
+ Previous Balance                                                                                                             0.00
+ NET AMOUNT DUE (2)                                                                                           = 15,00,000.00
+"""
+
+
+def test_ocr_image_layout_without_separators(parser):
+    bill = parser.parse(OCR_IMAGE_BILL)
+    assert bill.consumer_name == "Example Steel Manufacturing Pvt. Ltd"
+    assert bill.account_number == "CSPEC-HT-700001"
+    assert bill.billing_period == "2026-08-01 to 2026-08-31"
+    assert bill.previous_reading == Decimal("100000")      # not the "Previous Balance" row
+    assert bill.current_reading == Decimal("112500")
+    assert bill.units_consumed == Decimal("12500")
+    assert bill.net_amount_due == Decimal("1500000.00")
+    assert bill.missing_fields() == []
+
+
+COMPOUND_LABEL_BILL = """
+              Consumer / Corporate Name              Example Cement Works Limited
+              Registered Address                     Industrial Area, Raipur
+              Account / Consumer No.                 NSEDA-HT-100002
+              Sanctioned / Contract Demand           5,000 kVA
+              Bill Period                            July 2026
+              Due Date                               10 Aug 2026
+ lars                               Initial / Previous       Final / Current          Difference               Meter Constant     Consumption Units   Remarks
+ eter                                              200,000                  210,000                    10,000             2.000              20,000
+           Net Amount Due                                                                                                 2000000.00
+"""
+
+
+def test_compound_labels_and_right_aligned_table_with_empty_column(parser):
+    bill = parser.parse(COMPOUND_LABEL_BILL)
+    assert bill.consumer_name == "Example Cement Works Limited"
+    assert bill.account_number == "NSEDA-HT-100002"
+    assert bill.previous_reading == Decimal("200000")
+    assert bill.current_reading == Decimal("210000")
+    assert bill.multiplying_factor == Decimal("2.000")
+    assert bill.units_consumed == Decimal("20000")        # empty "Remarks" column doesn't shift values
+    assert bill.missing_fields() == []
+
+
+def test_table_values_offset_from_their_headers(parser):
+    """Right-aligned numbers drifting under the next header must stay in their own column."""
+    text = """
+       Meter Reading Details                         Previous Reading            Current Reading            Units Consumed
+       Main HT Meter                                                    78,000                      91,500                        13,500
+"""
+    bill = parser.parse(text)
+    assert bill.previous_reading == Decimal("78000")
+    assert bill.current_reading == Decimal("91500")
+    assert bill.units_consumed == Decimal("13500")
+
+
+def test_name_label_printed_above_the_name(parser):
+    billed_to = """
+     BILLED TO                                                                 NET AMOUNT DUE (Rs.)
+     M/S Example Steel Works Ltd.
+                                                                               1,00,000.00
+     Survey 118, Industrial Estate, Hyderabad 502319
+"""
+    assert parser.parse(billed_to).consumer_name == "M/S Example Steel Works Ltd"
+    stacked = """
+     Consumer Name & Address
+     M/S Example Precision Components Pvt. Ltd.
+     Plot 41, Industrial Area Phase II, Bhiwadi, Rajasthan 301019
+"""
+    bill = parser.parse(stacked)
+    assert bill.consumer_name == "M/S Example Precision Components Pvt. Ltd"
+    assert bill.sources["consumer_name"] == "table:Consumer Name & Address"
+
+
+def test_wrapped_company_name_is_joined(parser):
+    text = """
+    Consumer Name: M/S Example Pharma Pvt.              Consumer Number: 003900000001
+    Ltd.                                                Meter Number: S8100001
+    Address: Some MIDC, Ratnagiri,                      Connected Load (KW): 502.00
+"""
+    assert parser.parse(text).consumer_name == "M/S Example Pharma Pvt. Ltd"
+
+
+UNLABELLED_NAME_BILL = """
+     Example Grid Distribution Company Ltd.
+     Grid Bhavan, Hyderabad
+     HT CONSUMER - TAX INVOICE / ELECTRICITY BILL
+     {name}
+     Survey 118, Industrial Estate, Hyderabad 502319
+      Account Number         18800001                              Bill Number          870000001
+      Billing Period         01-Nov-2025 - 30-Nov-2025             Bill Date            08-Dec-2025
+      NET AMOUNT DUE                                                                   1,00,000.00
+"""
+
+
+@pytest.mark.parametrize("printed, expected, source", [
+    ("M/S Example Steel Works Ltd.", "M/S Example Steel Works Ltd", "inferred:M/S name"),
+    ("Example Steel Works Ltd.", "Example Steel Works Ltd", "inferred:company name"),
+])
+def test_unlabelled_consumer_name_is_inferred(parser, printed, expected, source):
+    bill = parser.parse(UNLABELLED_NAME_BILL.format(name=printed))
+    assert bill.consumer_name == expected                  # not the utility on the letterhead
+    assert bill.sources["consumer_name"] == source
+    assert any("no 'Consumer Name' label" in n for n in bill.notes)
+
+
+def test_unlabelled_name_is_not_inferred_from_letterhead_only(parser):
+    bill = parser.parse(UNLABELLED_NAME_BILL.format(name="Survey Office"))
+    assert bill.consumer_name is None
+
+
+def test_header_row_label_is_not_taken_as_name(parser):
+    text = """
+Consumer Name        Tariff Category      Bill Date
+RAMESH KUMAR         LT-1 Domestic        01-05-2025
+"""
+    assert parser.parse(text).consumer_name == "RAMESH KUMAR"
+
+
+def test_compound_label_naming_two_fields_is_ambiguous(parser):
+    bill = parser.parse("Previous/Current Reading : 4870 / 5320\n")
+    assert bill.current_reading is None                    # 4870 is the previous reading
+
+
+def test_units_derived_from_readings_when_not_printed(parser):
+    from app.services.parsing.base import DERIVED_UNITS_SOURCE
+    from app.services.validation_service import ValidationService, ValidationStatus
+
+    text = """
+Consumer Name: RAMESH KUMAR SHARMA          Consumer No.: 170012345678
+Billing Period: 01-05-2025 to 31-05-2025    Due Date: 16-06-2025
+Previous Reading: 1000.5
+Current Reading: 1350.5
+Net Amount Due: Rs. 2,450.50
+"""
+    bill = parser.parse(text + "Multiplying Factor: 20\n")
+    assert bill.units_consumed == Decimal("7000")          # (1350.5 - 1000.5) x 20
+    assert bill.sources["units_consumed"] == DERIVED_UNITS_SOURCE
+    result = ValidationService().validate(bill)
+    assert result.status == ValidationStatus.VALID
+    assert result.meter_reading_check is None              # derived, so not a cross-check
+    assert any("not printed on the bill" in n for n in result.notes)
+
+    bill = parser.parse(text)                              # no MF printed: flagged for review
+    assert bill.units_consumed == Decimal("350.0")
+    result = ValidationService().validate(bill)
+    assert result.status == ValidationStatus.WARNING
+    assert any("without a multiplying factor" in w for w in result.warnings)
+
+
+def test_pdf_watermark_text_is_ignored():
+    import fitz
+
+    from app.services.document_processor import DocumentProcessor
+
+    pdf = fitz.open()
+    page = pdf.new_page()
+    for i, line in enumerate(["Account Number: 18800001", "Meter Number: S3500001", "Due Date: 23-Dec-2025"]):
+        page.insert_text((50, 100 + 20 * i), line, fontsize=11)
+    pivot = fitz.Point(150, 300)
+    page.insert_text(pivot, "SPECIMEN - TEST DATA", fontsize=48, morph=(pivot, fitz.Matrix(45)))
+    text = DocumentProcessor().process(pdf.tobytes(), "pdf").text
+    assert "S3500001" in text
+    assert "SPECIMEN" not in text and "DATA" not in text
 
 
 def test_large_glyphs_survive_table_line_removal():

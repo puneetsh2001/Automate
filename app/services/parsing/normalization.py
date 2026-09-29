@@ -93,9 +93,12 @@ def parse_number(value: str | None) -> Decimal | None:
     return _to_decimal(token)
 
 
-# Currency markers, separators, and symbols OCR produces for '₹' / '=' (e.g. '&', '%').
-# Letters/digits are never stripped: a wrong amount is worse than a missing one.
-_CURRENCY_PREFIX_RE = re.compile(r"^(?:rs\.?|inr|₹|rupees|[=:&%$*#~?�]|-(?!\s*\d))\s*", re.IGNORECASE)
+# Currency markers, separators, and whatever symbol OCR produces for '₹' ('&', '%', '®', '=').
+# A lone letter before the number is a '₹' the font or OCR could not render ('I 18,76,540.00');
+# letters/digits attached to the number are never stripped: a wrong amount is worse than a missing one.
+_CURRENCY_PREFIX_RE = re.compile(
+    r"^(?:rs\.?|inr|rupees|[^\w\s\-+.,()]|-(?!\s*\d)|[A-Za-z](?=\s+\d))\s*", re.IGNORECASE
+)
 
 
 def parse_amount(value: str | None) -> Decimal | None:
@@ -238,7 +241,11 @@ def parse_account_number(value: str | None) -> str | None:
     fixed = "".join(fix_ocr_digits(seg) if seg.isalnum() else seg
                     for seg in re.split(r"([\-/])", token))
     digits = sum(c.isdigit() for c in fixed)
-    if digits < 4 or digits * 2 < len(fixed.replace("-", "").replace("/", "")):
+    if digits < 4:
+        return None
+    # Mostly letters is fine for structured IDs with a numeric part: 'CSPEC-HT-784521', 'WGESC/IND/552190'
+    has_numeric_segment = any(re.fullmatch(r"\d{4,}", seg) for seg in re.split(r"[\-/]", fixed))
+    if digits * 2 < len(fixed.replace("-", "").replace("/", "")) and not has_numeric_segment:
         return None
     return fixed.upper()
 

@@ -18,6 +18,9 @@ REQUIRED_FIELDS = (
     "net_amount_due",
 )
 
+# sources[...] value for units consumed calculated from the readings rather than read from the bill
+DERIVED_UNITS_SOURCE = "derived:meter readings"
+
 
 @dataclass
 class ParsedBill:

@@ -27,7 +27,7 @@ from enum import Enum
 from typing import Any
 
 from app.core.config import Settings, get_settings
-from app.services.parsing.base import REQUIRED_FIELDS, ParsedBill
+from app.services.parsing.base import DERIVED_UNITS_SOURCE, REQUIRED_FIELDS, ParsedBill
 
 logger = logging.getLogger(__name__)
 
@@ -194,6 +194,15 @@ class ValidationService:
         result.calculation = f"{formula} = {_fmt(calculated)}"
         if units is None:
             result.meter_reading_check = None
+            return
+        if bill.sources.get("units_consumed") == DERIVED_UNITS_SOURCE:
+            # Calculated from these same readings, so there is nothing independent to compare
+            result.meter_reading_check = None
+            result.notes.append(f"Units consumed is not printed on the bill; calculated from the meter readings: "
+                                f"{result.calculation}")
+            if mf is None:
+                result.warnings.append("Units consumed was calculated without a multiplying factor (none found "
+                                       "on the bill); please verify")
             return
 
         # A reading printed to 0.001 multiplied by a large MF is only accurate to MF x 0.001

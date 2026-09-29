@@ -177,6 +177,8 @@ function renderBill(bill) {
   } else if (details.meter_reading_check === false) {
     mc.textContent = `✕ Meter check failed: calculated ${details.calculated_units}${formula}, ` +
       `reported ${details.reported_units ?? "—"} (difference ${details.difference ?? "—"}).`;
+  } else if (details.calculation && bill.field_sources?.units_consumed?.startsWith("derived:")) {
+    mc.textContent = `Units consumed is not printed on the bill; calculated from the readings${formula}.`;
   } else {
     mc.textContent = "Meter check not possible (readings or units missing).";
   }

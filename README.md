@@ -263,7 +263,7 @@ No tariff rules are implemented. That work belongs to a later, state-specific mo
 
 1. **Upload validation.** The extension, the declared MIME type and the file's magic bytes must agree. The file is stored as `uploads/<uuid>.<ext>`, and the client's filename is only kept as display text.
 2. **PDFs** are handled page by page with PyMuPDF:
-   - If a page has a usable text layer (≥ 50 visible characters, mostly alphanumeric), its words are read directly. This is exact and takes milliseconds.
+   - If a page has a usable text layer (≥ 50 visible characters, mostly alphanumeric), its words are read directly. This is exact and takes milliseconds. Diagonal or vertical text (watermarks like "DUPLICATE" / "SPECIMEN", stamps) is dropped so it can't land inside table rows.
    - Otherwise the page is rendered at 300 DPI and OCR'd. Mixed PDFs (some text pages, some scanned) are handled, and the bill is marked `extraction_method: "mixed"`.
 3. **Image preprocessing** (`image_preprocessing.py`, each step a small function):
    `grayscale (EXIF-rotated, transparency flattened) → rescale to ~3000 px → median denoise → deskew (±8°) → remove table ruling lines`.
@@ -279,18 +279,23 @@ To add another OCR engine (e.g. AWS Textract), implement `OCRProvider.recognize(
 `BillParser` first asks each registered provider-specific parser (`PROVIDER_PARSERS`) whether it recognises the document. If none does, `GenericBillParser` handles it.
 
 **Normalisation** (`parsing/normalization.py`) runs on a copy of the text. It normalises line endings, unicode dashes and spaces, and table pipes. Inside numeric tokens only, it fixes common OCR confusions (`O→0`, `l/I→1`, `S→5`, `B→8`). Values are then normalised:
-- amounts: strips `Rs.`, `₹`, `INR` and OCR junk for the rupee sign; supports Indian grouping (`1,00,000.00`); returns `Decimal` with 2 dp
+- amounts: strips `Rs.`, `₹`, `INR` and whatever OCR makes of the rupee sign (`%`, `&`, `®`, `(2)`, a lone `I`); supports Indian grouping (`1,00,000.00`); returns `Decimal` with 2 dp
 - dates: day-first Indian formats (`16-06-2025`, `20/06/25`, `25 May 2025`, `25-May-25`, ISO)
 - billing period: date ranges (`01-05-2025 to 31-05-2025`, `12 Apr 2025 - 11 May 2025`) or a month (`MAY-2025` → `May 2025`)
-- account numbers stay strings (leading zeros and dashes are kept)
+- account numbers stay strings (leading zeros and dashes are kept); structured IDs like `CSPEC-HT-784521` are accepted
 
-**Label aliases** (`parsing/aliases.py`): each field has an ordered list of labels, for example *Consumer No / Account Number / CA Number / K No / Service Connection No / BP No …*. Matching ignores case and extra whitespace, and dots are optional. Add labels there, or without code changes via `LABEL_ALIASES_FILE`.
+**Label aliases** (`parsing/aliases.py`): each field has an ordered list of labels, for example *Consumer No / Account Number / CA Number / K No / Service Connection No / BP No …*. Matching ignores case and extra whitespace, and dots are optional. Compound labels are matched part by part (*Account / Consumer No.*, *Initial / Previous*), unless the parts name two different fields (*Previous/Current Reading*). Add labels there, or without code changes via `LABEL_ALIASES_FILE`.
 
-**Two extraction strategies**, tried in this order for each field:
-1. **Key/value**: `Label [(kWh)] [:|=|-] value`. The label must start a text cell (line start or after a column gap). This is why *Father/Husband Name* is not mistaken for the consumer's name, and why *Amount Payable After Last Date* doesn't win over *Amount Payable*.
-2. **Table**: a header row (`Previous Reading   Current Reading   Units Consumed`) with values in the same columns on the following lines. Values are matched to headers by horizontal overlap. Transposed tables (`Previous  Present` header with a `Reading  4870  5320` row) are supported too. Rows labelled *Date* are skipped.
+**Extraction strategies**, tried in this order for each field:
+1. **Key/value**: `Label [(kWh)] [:|=|-] value`. The label must start a text cell (line start, after a column gap, or after the `/` of a compound label). This is why *Father/Husband Name* is not mistaken for the consumer's name, and why *Amount Payable After Last Date* doesn't win over *Amount Payable*. For the consumer name, a column gap also works as the separator after a multi-word label (`Consumer Name      M/S …`, as OCR prints it), but the value is rejected if it reads like another label (`Consumer Name   Tariff Category`).
+2. **Table**: a header row (`Previous Reading   Current Reading   Units Consumed`) with values in the same columns on the following lines. Values are assigned to columns by an order-preserving alignment. Right-aligned numbers under left-aligned headers, and empty columns (`Remarks`), therefore don't shift values into a neighbouring column. Transposed tables (`Previous  Present` header with a `Reading  4870  5320` row) are supported too. Rows labelled *Date* are skipped. A name label may stand alone above its value (`BILLED TO` / `Consumer Name & Address` with the name on the next line).
+3. **Inference** (consumer name only, when the bill prints no label for it): on a document where at least 3 other fields were found, the first `M/S …` name, else a name ending in *Ltd / Limited / Pvt / LLP* that isn't the utility's own letterhead. The source is `inferred:…` and a note asks the user to verify it.
+
+A company name wrapped onto a second line (`M/S Example Pharma Pvt.` / `Ltd.`) is joined back together.
 
 Every candidate must pass a strict type parser (a date is never accepted as a reading, a label is never accepted as a name). If nothing passes, the field is `null`. `field_sources` records which label and strategy found each value, which helps with debugging.
+
+When the bill prints the readings but not the units, units are calculated as `(current - previous) x MF - open-access units`, with source `derived:meter readings` (see §10).
 
 The generic parser also refuses the traps found in real bills: history rows (`Bill Month 202507 202506 …`), column-numbering rows (`1 2 3 (3-4)=5`), and the utility's own bank account in payment instructions.
 
@@ -314,6 +319,7 @@ Each was built and verified against one real bill format (see §11). AVVNL/JdVVN
 | Required field missing | `WARNING`, `{"field": "...", "status": "missing"}`, message "*X could not be confidently extracted*" |
 | `units == (current - previous) x MF - open-access units` (MF / open-access only when printed; tolerance = max(`METER_READING_TOLERANCE`, MF x reading precision)) | Passes: stays `VALID`, and the formula is shown in `calculation` with an explanatory `note`. Fails: `WARNING` (not rejected: adjustments, estimates and net metering are legitimate reasons). |
 | Readings missing, so no cross-check possible | `meter_reading_check: null` plus a warning |
+| Units not printed, so calculated from the readings | `meter_reading_check: null` (nothing independent to compare) and a note with the formula; stays `VALID` if the bill prints an MF, otherwise `WARNING` "*calculated without a multiplying factor*" |
 | `current < previous` | `INVALID` (possible meter replacement or rollover; needs review) |
 | Negative units / amount / readings | `INVALID` |
 | Billing period end before start | `INVALID` |
@@ -382,7 +388,8 @@ Server logs (console) show each step: upload, per-page OCR timing, parse results
 ## 13. Known limitations and future improvements
 
 **Limitations**
-- Verified on 4 real HT bills (APDCL ×2, JVVNL, GESCOM), 5 synthetic bills, and degraded image variants (79/80 fields). Other utilities, and domestic/LT bills from these utilities, fall back to the generic parser. Expect to add aliases or a provider parser for each new format.
+- Verified on 4 real HT bills (APDCL ×2, JVVNL, GESCOM), 5 synthetic bills, degraded image variants (79/80 fields), and 18 AI-generated HT bills in 4 other layouts (12 PDFs + 6 PNG images: 18/18 VALID, all fields correct). Other utilities, and domestic/LT bills from these utilities, fall back to the generic parser. Expect to add aliases or a provider parser for each new format.
+- An inferred (unlabelled) consumer name is recognised by its form (`M/S …`, `… Pvt. Ltd.`). A private individual's name printed without any label is not inferred.
 - OCR can misread a digit into another valid-looking value (e.g. `11 May` → `14 May` on a heavily rotated photo). The parser can't detect that. The meter check catches such errors in readings and units, but not in dates or names.
 - English OCR only by default. Bilingual Hindi/regional bills need `OCR_LANGUAGE=eng+hin` (etc.) and the matching Tesseract language packs.
 - Processing is synchronous (a request waits for OCR). That's fine for single uploads, but not for bulk.

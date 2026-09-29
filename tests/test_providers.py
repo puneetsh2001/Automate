@@ -11,6 +11,8 @@ from decimal import Decimal
 import pytest
 
 from app.services.bill_parser import BillParser
+from app.services.parsing.base import DERIVED_UNITS_SOURCE
+from app.services.parsing.providers import APDCLParser
 from app.services.validation_service import ValidationService, ValidationStatus
 
 
@@ -63,7 +65,14 @@ def test_apdcl_tod_bill(parser):
 
 def test_apdcl_missing_zone_value_gives_null_not_partial_sum(parser):
     text = APDCL_TEXT.replace(" Normal |           -6.000", " Normal |    ???    -6.000").replace(" 200.000\n", "\n")
-    assert parser.parse(text).units_consumed is None
+    assert APDCLParser().parse(text).units_consumed is None
+    # The pipeline then calculates units from the readings - never the partial 100 + 100
+    bill = parser.parse(text)
+    assert bill.units_consumed == Decimal("400.000")        # 1800 x 1 - 1400 open access
+    assert bill.sources["units_consumed"] == DERIVED_UNITS_SOURCE
+    result = ValidationService().validate(bill)
+    assert result.meter_reading_check is None               # not an independent check
+    assert result.status == ValidationStatus.VALID          # MF is printed on the bill
 
 
 JVVNL_TEXT = """

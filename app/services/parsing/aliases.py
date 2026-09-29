@@ -21,9 +21,11 @@ logger = logging.getLogger(__name__)
 
 FIELD_ALIASES: dict[str, list[str]] = {
     "consumer_name": [
-        "Name of Consumer", "Name of the Consumer", "Consumer Name", "Customer Name",
-        "Name of Customer", "Name of the Firm", "Name of Firm", "Registered Consumer", "Consumer's Name", "Customer",
-        "Consumer", "Name",
+        "Consumer Name & Address", "Consumer Name and Address", "Name & Address of Consumer",
+        "Name and Address of Consumer", "Name of Consumer", "Name of the Consumer", "Consumer Name", "Customer Name",
+        "Name of Customer", "Name of the Firm", "Name of Firm", "Registered Consumer", "Consumer's Name",
+        "Corporate Name", "Company Name", "Firm Name", "Billed To", "Bill To", "Name & Address", "Name and Address",
+        "Customer", "Consumer", "Name",
     ],
     "account_number": [
         "Consumer Number", "Consumer No.", "Account Number", "Account No.", "Acct No.",
@@ -51,9 +53,9 @@ FIELD_ALIASES: dict[str, list[str]] = {
         "Present", "Curr.", "Closing",
     ],
     "units_consumed": [
-        "Total Units Consumed", "Units Consumed", "Energy Consumption", "Units Billed",
-        "Billed Units", "Net Units", "Total Units", "Total Consumption", "Consumption",
-        "Units", "kWh",
+        "Total Units Consumed", "Units Consumed", "Total Energy Consumption", "Energy Consumption", "Units Billed",
+        "Billed Units", "Billable Units", "Billed Energy", "Net Units", "Total Units", "Total Consumption",
+        "Consumption in Units", "Consumption Units", "Consumption", "Units", "kWh",
     ],
     "net_amount_due": [
         "Net Amount Due", "Net Amount Payable", "Net Payable Amount", "Net Payable",
@@ -61,7 +63,8 @@ FIELD_ALIASES: dict[str, list[str]] = {
         "Amount Due", "Total Bill Amount", "Bill Amount", "Total Amount", "Net Amount",
     ],
     "multiplying_factor": [
-        "Multiplying Factor", "Multiplication Factor", "Meter Multiplier", "Multiplier", "MF", "M.F.",
+        "Multiplying Factor", "Multiplication Factor", "Meter Multiplier", "Billing Multiplier", "Meter Constant",
+        "Multiplier", "MF", "M.F.",
     ],
 }
 

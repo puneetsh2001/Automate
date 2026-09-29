@@ -54,6 +54,30 @@ class DocumentText:
         return round(sum(confs) / len(confs), 2) if confs else None
 
 
+# Same flags page.get_text("words") uses, so words and line directions come from one text page
+_WORD_FLAGS = fitz.TEXT_PRESERVE_LIGATURES | fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_MEDIABOX_CLIP
+
+
+def _horizontal_words(page: fitz.Page) -> list[tuple]:
+    """Words of the page's text layer, without diagonal/vertical text.
+
+    Watermarks ("DUPLICATE", "SPECIMEN") and stamps are drawn at an angle
+    across the bill; their words would otherwise land inside table rows
+    ("DATA S3567281"). Pages whose text is mostly not horizontal are
+    returned unfiltered.
+    """
+    textpage = page.get_textpage(flags=_WORD_FLAGS)
+    words = textpage.extractWORDS()
+    angled = set()
+    for b, block in enumerate(textpage.extractDICT()["blocks"]):
+        for ln, line in enumerate(block.get("lines", [])):
+            dx, dy = line["dir"]
+            if dx <= 0 or abs(dy) > 0.1:  # more than ~6 degrees off horizontal
+                angled.add((b, ln))
+    kept = [w for w in words if (w[5], w[6]) not in angled]
+    return kept if len(kept) * 2 >= len(words) else words
+
+
 def _is_useful_text(text: str, min_chars: int) -> bool:
     visible = [c for c in text if not c.isspace()]
     if len(visible) < min_chars:
@@ -115,7 +139,7 @@ class DocumentProcessor:
             return DocumentText(pages=pages)
 
     def _process_pdf_page(self, page: fitz.Page, index: int) -> PageText:
-        raw_words = page.get_text("words")  # (x0, y0, x1, y1, word, block, line, word_no)
+        raw_words = _horizontal_words(page)  # (x0, y0, x1, y1, word, block, line, word_no)
         text_layer = " ".join(w[4] for w in raw_words)
         if _is_useful_text(text_layer, self.settings.PDF_TEXT_MIN_CHARS):
             words = [Word(w[4], w[0], w[1], w[2], w[3]) for w in raw_words]
