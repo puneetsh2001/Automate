@@ -166,6 +166,88 @@ def test_bill_with_missing_fields_lists_them(client):
     assert "Due date could not be confidently extracted" in bill["warnings"]
 
 
+def test_same_file_twice_is_rejected_and_can_be_replaced(client, sample_dir, settings):
+    data = (sample_dir / "bill_01_text_form.pdf").read_bytes()
+    first = upload(client, "Bill-2.pdf", data, "application/pdf")
+    assert first.status_code == 201, first.text
+    bill_id = first.json()["id"]
+    stored_before = set(settings.upload_path.glob("*"))
+
+    again = upload(client, "renamed.pdf", data, "application/pdf")   # matched by content, not name
+    assert again.status_code == 409
+    body = again.json()
+    assert body["error"] == "duplicate_file"
+    assert body["existing_bill_id"] == bill_id
+    assert f"already uploaded as bill #{bill_id}" in body["message"]
+    assert set(settings.upload_path.glob("*")) == stored_before      # nothing stored, no OCR run
+    assert client.get("/api/bills").json()["total"] == 1
+
+    replaced = client.post("/api/bills/upload", params={"replace": "true"},
+                           files={"file": ("renamed.pdf", data, "application/pdf")})
+    assert replaced.status_code == 200, replaced.text
+    bill = replaced.json()
+    assert bill["id"] == bill_id                                      # re-processed in place
+    assert bill["original_filename"] == "renamed.pdf"
+    assert bill["validation_status"] == "VALID"                       # not a duplicate of itself
+    assert bill["validation_details"]["possible_duplicate_of"] == []
+    assert client.get("/api/bills").json()["total"] == 1
+    stored_after = set(settings.upload_path.glob("*"))
+    assert len(stored_after) == len(stored_before) and stored_after != stored_before  # old file swapped out
+
+    # Once deleted, the same file can be uploaded again
+    assert client.delete(f"/api/bills/{bill_id}").status_code == 204
+    assert upload(client, "Bill-2.pdf", data, "application/pdf").status_code == 201
+
+
+def test_replace_with_a_new_file_just_creates_the_bill(client, sample_dir):
+    data = (sample_dir / "bill_01_text_form.pdf").read_bytes()
+    r = client.post("/api/bills/upload", params={"replace": "true"},
+                    files={"file": ("bill.pdf", data, "application/pdf")})
+    assert r.status_code == 201
+
+
+def test_concurrent_upload_of_same_file_returns_409(client, sample_dir, monkeypatch):
+    """Both requests pass the pre-check; the unique file_hash index stops the second insert."""
+    from app.services.bill_service import BillService
+
+    data = (sample_dir / "bill_01_text_form.pdf").read_bytes()
+    first_id = upload(client, "a.pdf", data, "application/pdf").json()["id"]
+    real_find = BillService._find_by_hash
+    calls = []
+
+    def pre_check_misses_concurrent_insert(self, file_hash):
+        calls.append(file_hash)
+        return None if len(calls) == 1 else real_find(self, file_hash)
+
+    monkeypatch.setattr(BillService, "_find_by_hash", pre_check_misses_concurrent_insert)
+    r = upload(client, "b.pdf", data, "application/pdf")
+    assert r.status_code == 409, r.text
+    assert r.json()["existing_bill_id"] == first_id
+    assert client.get("/api/bills").json()["total"] == 1
+
+
+MAY_BILL = ["Consumer Name: TEST USER", "Account No: 123456789", "Billing Period: 01/05/2025 to 31/05/2025",
+            "Due Date: 15/06/2025", "Previous Reading: 1000", "Current Reading: 1350", "Units Consumed: 350",
+            "Net Amount Due: Rs. 2,000.00"]
+
+
+def test_same_bill_in_a_different_file_is_flagged_not_blocked(client):
+    first = upload(client, "may.pdf", _text_pdf(MAY_BILL), "application/pdf").json()
+    assert first["validation_status"] == "VALID"
+
+    rescan = upload(client, "may-scan.pdf", _text_pdf(MAY_BILL + ["Scanned copy"]), "application/pdf")
+    assert rescan.status_code == 201, rescan.text
+    bill = rescan.json()
+    assert bill["validation_status"] == "WARNING"
+    assert bill["validation_details"]["possible_duplicate_of"] == [first["id"]]
+    assert any(f"Possible duplicate of bill #{first['id']}" in w for w in bill["warnings"])
+
+    june = [line.replace("01/05/2025 to 31/05/2025", "01/06/2025 to 30/06/2025").replace("15/06/2025", "15/07/2025")
+            for line in MAY_BILL]
+    r = upload(client, "june.pdf", _text_pdf(june), "application/pdf")
+    assert r.json()["validation_status"] == "VALID"               # next month of the same account is fine
+
+
 def _render_bill_image(fmt: str) -> bytes:
     img = Image.new("RGB", (1400, 800), "white")
     draw = ImageDraw.Draw(img)

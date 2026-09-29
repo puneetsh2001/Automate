@@ -74,6 +74,18 @@ class ValidationResult:
     missing_fields: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    possible_duplicate_of: list[int] = field(default_factory=list)
+
+    def flag_possible_duplicates(self, bill_ids: list[int]) -> None:
+        """Same account and billing period as stored bills: needs review, not rejection
+        (a utility may issue a revised bill, or the period may be misread)."""
+        if not bill_ids:
+            return
+        self.possible_duplicate_of = list(bill_ids)
+        refs = ", ".join(f"#{i}" for i in bill_ids)
+        self.warnings.append(f"Possible duplicate of bill {refs}: same account number and billing period")
+        if self.status == ValidationStatus.VALID:
+            self.status = ValidationStatus.WARNING
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-serialisable form stored in bills.validation_details."""
@@ -91,6 +103,7 @@ class ValidationResult:
             "missing_fields": self.missing_fields,
             "warnings": self.warnings,
             "errors": self.errors,
+            "possible_duplicate_of": self.possible_duplicate_of,
         }
 
 

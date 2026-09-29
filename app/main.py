@@ -57,7 +57,8 @@ app = FastAPI(
 async def bill_ocr_error_handler(request: Request, exc: BillOCRError) -> JSONResponse:
     log = logger.error if exc.status_code >= 500 else logger.warning
     log("%s %s -> %d %s: %s", request.method, request.url.path, exc.status_code, exc.error_code, exc.message)
-    return JSONResponse(status_code=exc.status_code, content={"error": exc.error_code, "message": exc.message})
+    return JSONResponse(status_code=exc.status_code,
+                        content={"error": exc.error_code, "message": exc.message, **exc.extra})
 
 
 @app.exception_handler(StarletteHTTPException)

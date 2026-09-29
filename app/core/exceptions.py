@@ -9,6 +9,11 @@ class BillOCRError(Exception):
         super().__init__(message)
         self.message = message
 
+    @property
+    def extra(self) -> dict:
+        """Additional fields for the JSON error body."""
+        return {}
+
 
 class InvalidUploadError(BillOCRError):
     status_code = 400
@@ -28,6 +33,21 @@ class UnsupportedFileTypeError(InvalidUploadError):
 class FileTooLargeError(InvalidUploadError):
     status_code = 413
     error_code = "file_too_large"
+
+
+class DuplicateFileError(BillOCRError):
+    """The exact same file (byte for byte) is already stored as a bill."""
+
+    status_code = 409
+    error_code = "duplicate_file"
+
+    def __init__(self, message: str, existing_bill_id: int):
+        super().__init__(message)
+        self.existing_bill_id = existing_bill_id
+
+    @property
+    def extra(self) -> dict:
+        return {"existing_bill_id": self.existing_bill_id}
 
 
 class DocumentProcessingError(BillOCRError):

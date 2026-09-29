@@ -36,6 +36,9 @@ class ValidationDetails(BaseModel):
     open_access_units: float | None = None
     calculation: str | None = Field(None, description="Formula used for calculated_units")
     notes: list[str] = Field(default_factory=list, description="Informational; do not affect the status")
+    possible_duplicate_of: list[int] = Field(
+        default_factory=list, description="Other bills with the same account number and billing period"
+    )
     field_checks: list[FieldCheck] = []
     missing_fields: list[str] = []
     warnings: list[str] = []
@@ -129,3 +132,4 @@ class HealthResponse(BaseModel):
 class ErrorResponse(BaseModel):
     error: str = Field(..., description="Machine-readable error code")
     message: str = Field(..., description="Human-readable explanation")
+    existing_bill_id: int | None = Field(None, description="duplicate_file only: the bill that has this file")

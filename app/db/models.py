@@ -24,6 +24,8 @@ class Bill(Base):
     original_filename: Mapped[str] = mapped_column(String(255))
     stored_filename: Mapped[str] = mapped_column(String(255), unique=True)
     file_type: Mapped[str] = mapped_column(String(10))
+    # SHA-256 of the uploaded bytes: the same file can't be stored twice (NULL for bills uploaded before 0002)
+    file_hash: Mapped[str | None] = mapped_column(String(64), unique=True, index=True)
 
     # Extracted fields (all nullable: never invent values)
     consumer_name: Mapped[str | None] = mapped_column(String(255))

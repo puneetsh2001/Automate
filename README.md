@@ -130,7 +130,7 @@ python -m venv venv
 venv\Scripts\activate          # if blocked: Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 pip install -r requirements-dev.txt   # app + test tools
 copy .env.example .env         # then edit DATABASE_URL (password!) in .env
-alembic upgrade head           # creates the bills table
+alembic upgrade head           # creates / updates the bills table (run again after pulling new migrations)
 ```
 
 ## 4. Configuration (.env)
@@ -176,8 +176,10 @@ On startup the log says whether Tesseract was found. If it wasn't, the server st
 
 1. Open http://127.0.0.1:8000/.
 2. Drag a bill onto the drop zone, or click **browse**. Only `.pdf`, `.png`, `.jpg` and `.jpeg` are accepted.
-3. Click **Upload & extract**. The progress list shows *Processing → OCR completed → Data extraction completed → Validation completed*.
+3. Click **Upload & extract**. The progress list shows *Processing → OCR completed → Data extraction completed → Validation completed*. When it finishes, the drop zone is ready for the next file.
 4. The result card shows every field, the validation badge, the meter-reading check, and any warnings. Missing fields are shown as *Not found*, and mismatched values are highlighted.
+   - If that exact file is already stored, nothing is processed. You get *"This file was already uploaded as bill #N"* with **View existing bill** and **Replace** (extract again and overwrite bill #N, keeping its number).
+   - If a different file has the same account number and billing period as a stored bill (a re-scan, or a photo of the printout), it is saved with a **WARNING** *"Possible duplicate of bill #N"* and a link to that bill, so someone can decide which one to keep.
 5. Expand **Raw OCR text (debug)** to see exactly what the OCR read.
 6. **Recent bills** lists stored bills. Click a row to reopen one, or use **Delete** to remove it.
 
@@ -187,7 +189,7 @@ All error responses share one shape: `{"error": "<code>", "message": "<human rea
 
 | Method | Path | Description | Success |
 |---|---|---|---|
-| POST | `/api/bills/upload` | upload + full pipeline, returns the stored bill | 201 |
+| POST | `/api/bills/upload` | upload + full pipeline, returns the stored bill. `?replace=true` re-processes the bill that already has this file | 201 (200 when replaced) |
 | GET | `/api/bills` | list (`limit`, `offset`, `validation_status`, `account_number`) | 200 |
 | GET | `/api/bills/{id}` | one bill incl. validation details and raw text | 200 |
 | GET | `/api/bills/{id}/raw-text` | unmodified OCR / PDF text | 200 |
@@ -195,7 +197,9 @@ All error responses share one shape: `{"error": "<code>", "message": "<human rea
 | DELETE | `/api/bills/{id}` | delete the bill and its stored file | 204 |
 | GET | `/health` | database + OCR status | 200 |
 
-Upload errors: `400 empty_file / invalid_upload` (content doesn't match the extension), `413 file_too_large`, `415 unsupported_file_type`, `422 document_processing_failed` (corrupt or password-protected), `503 ocr_unavailable / database_unavailable`, `500 ocr_failed`.
+Upload errors: `400 empty_file / invalid_upload` (content doesn't match the extension), `409 duplicate_file` (this exact file is already stored; the body also has `existing_bill_id`), `413 file_too_large`, `415 unsupported_file_type`, `422 document_processing_failed` (corrupt or password-protected), `503 ocr_unavailable / database_unavailable`, `500 ocr_failed`.
+
+Duplicate files are recognised by content (SHA-256 of the bytes, stored in `bills.file_hash`), not by file name: a renamed copy is still a duplicate, and two different bills that happen to share a name are not. Bills uploaded before migration `0002` have no fingerprint, so only the account + billing period check covers them.
 
 ### Example request
 ```powershell
@@ -319,6 +323,7 @@ Each was built and verified against one real bill format (see §11). AVVNL/JdVVN
 | Required field missing | `WARNING`, `{"field": "...", "status": "missing"}`, message "*X could not be confidently extracted*" |
 | `units == (current - previous) x MF - open-access units` (MF / open-access only when printed; tolerance = max(`METER_READING_TOLERANCE`, MF x reading precision)) | Passes: stays `VALID`, and the formula is shown in `calculation` with an explanatory `note`. Fails: `WARNING` (not rejected: adjustments, estimates and net metering are legitimate reasons). |
 | Readings missing, so no cross-check possible | `meter_reading_check: null` plus a warning |
+| Same account number and billing period as a stored bill (different file) | `WARNING` "*Possible duplicate of bill #N*", ids in `possible_duplicate_of`. Not rejected, since utilities issue revised bills. |
 | Units not printed, so calculated from the readings | `meter_reading_check: null` (nothing independent to compare) and a note with the formula; stays `VALID` if the bill prints an MF, otherwise `WARNING` "*calculated without a multiplying factor*" |
 | `current < previous` | `INVALID` (possible meter replacement or rollover; needs review) |
 | Negative units / amount / readings | `INVALID` |
@@ -375,6 +380,7 @@ Current result: **45/45 fields and statuses correct.** Regenerate the bills with
 | `Tesseract language data missing for: hin` | Re-run the Tesseract installer and tick the language, or set `OCR_LANGUAGE=eng`. |
 | 503 `database_unavailable` | Check that PostgreSQL is running (`services.msc` → postgresql), check `DATABASE_URL` and the password, and run `alembic upgrade head`. |
 | `no such table: bills` / `relation "bills" does not exist` | Run `alembic upgrade head`. |
+| `no such column: bills.file_hash` / `column bills.file_hash does not exist` | The database is older than the code. Run `alembic upgrade head` (Render does this on every start). |
 | `password authentication failed` | Fix the password in `DATABASE_URL`. Special characters must be URL-encoded (`@` → `%40`). |
 | `venv\Scripts\activate` is blocked | `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` |
 | `ModuleNotFoundError: app` when running alembic or scripts | Run commands from the `electricity_bill_ocr` folder with the venv activated. |

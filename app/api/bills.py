@@ -38,10 +38,16 @@ def get_bill_service(db: Session = Depends(get_db)) -> BillService:
         "Runs the full pipeline - text extraction / OCR, parsing, normalisation and "
         "validation - stores the result and returns it. Fields that could not be "
         "extracted confidently are `null` and listed in `warnings`. A bill whose "
-        "values fail validation is still stored, with `validation_status` WARNING or INVALID."
+        "values fail validation is still stored, with `validation_status` WARNING or INVALID.\n\n"
+        "**Duplicates:** uploading a file that is already stored returns 409 `duplicate_file` with "
+        "`existing_bill_id`; repeat with `replace=true` to re-process that bill in place (200, same id). "
+        "A different file with the same account number and billing period as a stored bill is saved "
+        "with a WARNING and `validation_details.possible_duplicate_of`."
     ),
     responses={
+        200: {"model": BillResponse, "description": "`replace=true`: the existing bill was re-processed"},
         400: {"model": ErrorResponse, "description": "Empty file or content/extension mismatch"},
+        409: {"model": ErrorResponse, "description": "This file is already stored (see existing_bill_id)"},
         413: {"model": ErrorResponse, "description": "File larger than MAX_UPLOAD_SIZE_MB"},
         415: {"model": ErrorResponse, "description": "Unsupported file type"},
         422: {"model": ErrorResponse, "description": "Corrupt or unreadable document"},
@@ -50,12 +56,16 @@ def get_bill_service(db: Session = Depends(get_db)) -> BillService:
     },
 )
 def upload_bill(
+    response: Response,
     file: UploadFile = File(..., description="Bill document (.pdf, .png, .jpg, .jpeg)"),
+    replace: bool = Query(False, description="If this file is already stored, re-process that bill"),
     service: BillService = Depends(get_bill_service),
 ) -> BillResponse:
     # Read at most limit+1 bytes so oversized uploads are rejected without loading them fully
     data = file.file.read(get_settings().max_upload_bytes + 1)
-    bill = service.process_upload(file.filename, file.content_type, data)
+    bill, replaced = service.process_upload(file.filename, file.content_type, data, replace=replace)
+    if replaced:
+        response.status_code = status.HTTP_200_OK
     return to_response(bill)
 
 

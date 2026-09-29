@@ -17,6 +17,7 @@ const form = $("upload-form");
 const input = $("file-input");
 const dropzone = $("dropzone");
 const uploadBtn = $("upload-btn");
+const DROPZONE_HTML = $("dropzone-text").innerHTML;
 let selectedFile = null;
 
 // ---------------------------------------------------------------- helpers
@@ -67,6 +68,14 @@ function setFile(file) {
   uploadBtn.disabled = false;
 }
 
+function resetDropzone() {
+  selectedFile = null;
+  input.value = "";  // so choosing the same file again still fires "change"
+  $("dropzone-text").innerHTML = DROPZONE_HTML;
+  dropzone.classList.remove("has-file");
+  uploadBtn.disabled = true;
+}
+
 input.addEventListener("change", () => setFile(input.files[0]));
 ["dragenter", "dragover"].forEach((evt) =>
   dropzone.addEventListener(evt, (e) => { e.preventDefault(); dropzone.classList.add("dragover"); }));
@@ -94,21 +103,31 @@ function showError(message) {
 }
 
 // ---------------------------------------------------------------- upload
-form.addEventListener("submit", async (e) => {
+form.addEventListener("submit", (e) => {
   e.preventDefault();
-  if (!selectedFile) return;
+  if (selectedFile) uploadBill(selectedFile);
+});
 
+// replace = re-process the bill that already has this exact file
+async function uploadBill(file, replace = false) {
   hide($("error"));
+  hide($("duplicate"));
   hide($("result"));
   resetSteps();
   setStep("upload", "active");
   uploadBtn.disabled = true;
 
   const data = new FormData();
-  data.append("file", selectedFile);
+  data.append("file", file);
 
   try {
-    const response = await fetch("/api/bills/upload", { method: "POST", body: data });
+    const url = replace ? "/api/bills/upload?replace=true" : "/api/bills/upload";
+    const response = await fetch(url, { method: "POST", body: data });
+    if (response.status === 409) {
+      hide($("steps"));
+      showDuplicate(await response.json(), file);
+      return;
+    }
     if (!response.ok) throw new Error(await apiError(response));
     const bill = await response.json();
 
@@ -125,9 +144,26 @@ form.addEventListener("submit", async (e) => {
     setStep("upload", "failed");
     showError(`Processing failed: ${err.message}`);
   } finally {
-    uploadBtn.disabled = false;
+    // Back to "drag & drop" once this file is done, unless another file was picked meanwhile
+    if (selectedFile === file || selectedFile === null) resetDropzone();
+    else uploadBtn.disabled = false;
   }
-});
+}
+
+function showDuplicate(body, file) {
+  $("duplicate-message").textContent = body.message;
+  $("duplicate-view").onclick = () => { hide($("duplicate")); showBill(body.existing_bill_id); };
+  $("duplicate-replace").onclick = () => uploadBill(file, true);
+  show($("duplicate"));
+}
+
+async function showBill(id) {
+  const response = await fetch(`/api/bills/${id}`);
+  if (!response.ok) return showError(await apiError(response));
+  hide($("steps"));
+  renderBill(await response.json());
+  $("result").scrollIntoView({ behavior: "smooth" });
+}
 
 // ---------------------------------------------------------------- render
 function renderBill(bill) {
@@ -191,6 +227,15 @@ function renderBill(bill) {
   list.replaceChildren(...(bill.warnings || []).map((w) => el("li", {}, w)));
   (bill.warnings || []).length ? show($("warnings")) : hide($("warnings"));
 
+  const links = $("duplicate-links");
+  const duplicates = details.possible_duplicate_of || [];
+  links.replaceChildren(...duplicates.map((id) => {
+    const link = el("button", { type: "button", class: "link" }, `View bill #${id}`);
+    link.addEventListener("click", () => showBill(id));
+    return link;
+  }));
+  links.hidden = !duplicates.length;
+
   $("raw-text").textContent = bill.raw_ocr_text || "(no text)";
   show($("result"));
 }
@@ -240,13 +285,7 @@ function historyRow(b) {
   actions.append(del);
   tr.append(actions);
 
-  tr.addEventListener("click", async () => {
-    const response = await fetch(`/api/bills/${b.id}`);
-    if (!response.ok) return showError(await apiError(response));
-    hide($("steps"));
-    renderBill(await response.json());
-    $("result").scrollIntoView({ behavior: "smooth" });
-  });
+  tr.addEventListener("click", () => showBill(b.id));
   return tr;
 }
 
