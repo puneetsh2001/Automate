@@ -111,15 +111,15 @@ Or download the installer from https://github.com/UB-Mannheim/tesseract/wiki. Th
 ```
 For Hindi or other scripts, select the extra languages in the installer and set `OCR_LANGUAGE=eng+hin`.
 
-### 3.3 PostgreSQL
-Install it from https://www.postgresql.org/download/windows/ (remember the `postgres` password), then create the database:
+### 3.3 Database
+**Local development uses SQLite** (`DATABASE_URL=sqlite:///electricity_bills.db`, the default in `.env.example`): a file in the project folder, nothing to install. The cloud database (Neon) is only for the live app on Render (§14). Don't point a local run at it, or local test uploads end up on the live site.
+
+Optional, a local PostgreSQL: install it from https://www.postgresql.org/download/windows/ (remember the `postgres` password), then create the database:
 ```powershell
 & "C:\Program Files\PostgreSQL\16\bin\psql.exe" -U postgres -c "CREATE DATABASE electricity_bills;"
 ```
 Adjust the version folder (`16`) to your install.
 
-> **No PostgreSQL yet?** Set `DATABASE_URL=sqlite:///./electricity_bills.db` in `.env` and everything works with zero setup. You can switch later.
->
 > **MySQL:** `pip install pymysql`, `CREATE DATABASE electricity_bills CHARACTER SET utf8mb4;`, then set
 > `DATABASE_URL=mysql+pymysql://root:PASSWORD@localhost:3306/electricity_bills`.
 
@@ -129,7 +129,7 @@ cd electricity_bill_ocr
 python -m venv venv
 venv\Scripts\activate          # if blocked: Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 pip install -r requirements-dev.txt   # app + test tools
-copy .env.example .env         # then edit DATABASE_URL (password!) in .env
+copy .env.example .env         # local SQLite by default; edit DATABASE_URL only for local PostgreSQL
 alembic upgrade head           # creates / updates the bills table (run again after pulling new migrations)
 ```
 
@@ -175,13 +175,16 @@ On startup the log says whether Tesseract was found. If it wasn't, the server st
 ## 6. Using the UI
 
 1. Open http://127.0.0.1:8000/.
-2. Drag a bill onto the drop zone, or click **browse**. Only `.pdf`, `.png`, `.jpg` and `.jpeg` are accepted.
-3. Click **Upload & extract**. The progress list shows *Processing → OCR completed → Data extraction completed → Validation completed*. When it finishes, the drop zone is ready for the next file.
-4. The result card shows every field, the validation badge, the meter-reading check, and any warnings. Missing fields are shown as *Not found*, and mismatched values are highlighted.
+2. Drag a bill onto the drop zone, or click **Browse files**. Only `.pdf`, `.png`, `.jpg` and `.jpeg` are accepted.
+3. Click **Upload & extract**. The progress bar shows *Upload → Read document → Extract fields → Validate* with a running timer. When it finishes, the drop zone is ready for the next file.
+4. The result shows a summary (status, consumer, account, period, due date, net amount), the **document preview** next to the **extracted data** (key figures, the meter-reading check, and every field with where it was found on the bill), plus warnings and notes. Missing fields are shown as *Not found*, and mismatched values are highlighted. Multi-page PDFs have page arrows; **Open original** opens the uploaded file. Other tabs show the **document text** (line-numbered, copyable) and the result as **JSON** (copy or download). The address bar links to the bill (`/#bill-12`).
    - If that exact file is already stored, nothing is processed. You get *"This file was already uploaded as bill #N"* with **View existing bill** and **Replace** (extract again and overwrite bill #N, keeping its number).
    - If a different file has the same account number and billing period as a stored bill (a re-scan, or a photo of the printout), it is saved with a **WARNING** *"Possible duplicate of bill #N"* and a link to that bill, so someone can decide which one to keep.
 5. Expand **Raw OCR text (debug)** to see exactly what the OCR read.
-6. **Recent bills** lists stored bills. Click a row to reopen one, or use **Delete** to remove it.
+6. **Recent bills** lists stored bills, 10 per page. Search by consumer name, account number or file name, filter by status, click a row to reopen a bill, or use the bin icon to delete it.
+7. An **invalid** document (not a bill, or contradictory values) is shown with a red *Not saved* notice and the reasons. Nothing is stored, so it doesn't appear under Recent bills.
+
+The UI follows the system light/dark setting and works on phones.
 
 ## 7. API
 
@@ -190,8 +193,10 @@ All error responses share one shape: `{"error": "<code>", "message": "<human rea
 | Method | Path | Description | Success |
 |---|---|---|---|
 | POST | `/api/bills/upload` | upload + full pipeline, returns the stored bill. `?replace=true` re-processes the bill that already has this file | 201 (200 when replaced) |
-| GET | `/api/bills` | list (`limit`, `offset`, `validation_status`, `account_number`) | 200 |
+| GET | `/api/bills` | list (`limit`, `offset`, `validation_status`, `account_number`, `search` = part of the consumer name, account number or file name) | 200 |
 | GET | `/api/bills/{id}` | one bill incl. validation details and raw text | 200 |
+| GET | `/api/bills/{id}/preview?page=N` | image of one page: PNG rendered from the PDF, or a downscaled JPEG of a photo | 200 |
+| GET | `/api/bills/{id}/file` | the original uploaded file | 200 |
 | GET | `/api/bills/{id}/raw-text` | unmodified OCR / PDF text | 200 |
 | GET | `/api/bills/{id}/tariff-input` | normalised input for a future tariff engine | 200 |
 | DELETE | `/api/bills/{id}` | delete the bill and its stored file | 204 |
@@ -325,14 +330,14 @@ Each was built and verified against one real bill format (see §11). AVVNL/JdVVN
 | Readings missing, so no cross-check possible | `meter_reading_check: null` plus a warning |
 | Same account number and billing period as a stored bill (different file) | `WARNING` "*Possible duplicate of bill #N*", ids in `possible_duplicate_of`. Not rejected, since utilities issue revised bills. |
 | Units not printed, so calculated from the readings | `meter_reading_check: null` (nothing independent to compare) and a note with the formula; stays `VALID` if the bill prints an MF, otherwise `WARNING` "*calculated without a multiplying factor*" |
-| `current < previous` | `INVALID` (possible meter replacement or rollover; needs review) |
+| `current < previous` | `INVALID` (possible meter replacement or rollover) |
 | Negative units / amount / readings | `INVALID` |
 | Billing period end before start | `INVALID` |
 | Due date before billing period end | `WARNING` |
 | Mean OCR confidence < threshold | `WARNING` |
 | Nothing extracted at all | `INVALID` |
 
-Bills are **always stored**, whatever the status. Validation never drops extracted data.
+`VALID` and `WARNING` bills are stored. **`INVALID` results are not stored**: the upload returns them (200, `saved: false`, `id: null`) so the UI can show what was read and why it is invalid, but neither the data nor the file is kept. That keeps non-bills (a CV, a manual) and contradictory bills out of the database; re-upload a corrected scan instead.
 
 `validation_details.notes` explains how derived values were obtained (TOD sums, MF, open-access units, a due-date year inferred from the bill month). Notes are informational and don't change the status. The UI shows them under **How values were derived**.
 
@@ -421,7 +426,7 @@ Browser ──https──► Render (Docker: FastAPI + Tesseract + UI) ──TLS
 1. Sign up at https://neon.tech → **New project** → region **AWS Asia Pacific (Singapore)** (same region as the app) → Postgres 16.
 2. On the project dashboard, click **Connect** and copy the connection string. It looks like
    `postgresql://neondb_owner:••••@ep-xxxx.ap-southeast-1.aws.neon.tech/neondb?sslmode=require`
-3. **Local use:** put it in `.env` as `DATABASE_URL=...` and run `alembic upgrade head`. Your PC then uses the same cloud database. Keep this string secret: never commit it or paste it into chat.
+3. It goes into the Render dashboard only (next step). Keep this string secret: never commit it or paste it into chat. Local runs keep using the SQLite file (§3.3); to run a one-off command against Neon (e.g. `alembic upgrade head`), set it for that terminal only: `$env:DATABASE_URL="postgresql://…"`.
 
 ### 14.2 Put the code on GitHub
 Create an **empty private** repository at https://github.com/new (no README), then from the project folder:
@@ -444,7 +449,7 @@ Every `git push` to `main` redeploys automatically.
 | | |
 |---|---|
 | Sleep | The Render free service sleeps after 15 min without traffic; the next visit takes ~50 s to wake. Open the link once before a demo. |
-| Uploaded files | The container disk is temporary: original PDFs/images are lost on redeploy/restart. **All extracted data and raw OCR text are in PostgreSQL and are kept.** |
+| Uploaded files | The container disk is temporary: original PDFs/images are lost on redeploy/restart. **All extracted data and raw OCR text are in PostgreSQL and are kept.** For such bills the document preview says the original is no longer stored (`404 file_not_available`); the extracted data still shows. |
 | Access | No login: anyone with the link can upload, view and delete bills. Don't leave real customer bills on it longer than needed. |
 | Limits | 512 MB RAM, shared CPU: a scanned page takes a few seconds; keep `PDF_MAX_PAGES` modest. Neon free: 0.5 GB storage (thousands of bills). |
 

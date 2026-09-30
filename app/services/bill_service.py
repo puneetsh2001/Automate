@@ -8,22 +8,47 @@ import hashlib
 import logging
 import time
 from datetime import datetime, timezone
+from enum import Enum
+from pathlib import Path
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
-from app.core.exceptions import BillNotFoundError, DatabaseUnavailableError, DuplicateFileError
+from app.core.exceptions import (
+    BillNotFoundError,
+    DatabaseUnavailableError,
+    DuplicateFileError,
+    FileNotAvailableError,
+)
 from app.db.models import Bill
 from app.schemas.bill import BillResponse, BillSummary, TariffInput, ValidationDetails
 from app.services.bill_parser import BillParser
 from app.services.document_processor import DocumentProcessor
 from app.services.parsing.base import ParsedBill
-from app.services.validation_service import ValidationService
-from app.utils.file_utils import delete_upload, generate_stored_filename, save_upload, validate_upload
+from app.services.preview_service import render_preview
+from app.services.validation_service import ValidationService, ValidationStatus
+from app.utils.file_utils import (
+    delete_upload,
+    generate_stored_filename,
+    safe_upload_path,
+    save_upload,
+    validate_upload,
+)
 
 logger = logging.getLogger(__name__)
+
+
+class UploadOutcome(str, Enum):
+    CREATED = "created"
+    REPLACED = "replaced"    # an existing bill with the same file was re-processed
+    NOT_SAVED = "not_saved"  # INVALID: returned for display only
+
+
+def _escape_like(text: str) -> str:
+    """Make %, _ and \\ in user input match literally in a LIKE pattern."""
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def _duplicate_error(existing: Bill) -> DuplicateFileError:
@@ -59,13 +84,15 @@ class BillService:
 
     # ------------------------------------------------------------ upload
     def process_upload(self, filename: str | None, content_type: str | None, data: bytes,
-                       replace: bool = False) -> tuple[Bill, bool]:
-        """Run the pipeline on an upload and store the result -> (bill, replaced).
+                       replace: bool = False) -> tuple[Bill, UploadOutcome]:
+        """Run the pipeline on an upload and store the result -> (bill, outcome).
 
         The same file (byte for byte) is rejected with DuplicateFileError, unless
         `replace` is set: then the existing bill is re-processed in place (same id),
         e.g. to apply parser improvements. A different file with the same account
         number and billing period is stored, but flagged as a possible duplicate.
+        An INVALID result (not a bill, or contradictory values) is returned for
+        display but neither the data nor the file is stored.
         """
         start = time.perf_counter()
         upload = validate_upload(filename, content_type, data, self.settings.max_upload_bytes)
@@ -109,6 +136,11 @@ class BillService:
                 validation_details=validation.to_dict(),
                 field_sources=parsed.sources,
             )
+            if validation.status == ValidationStatus.INVALID:
+                # Shown to the user, never stored; an existing bill being replaced stays as it was
+                delete_upload(self.settings.upload_path, stored_filename)
+                logger.info("Bill not saved: validation status INVALID (%s)", "; ".join(validation.errors))
+                return Bill(**values), UploadOutcome.NOT_SAVED
             if existing is None:
                 bill = Bill(**values)
                 self.db.add(bill)
@@ -141,7 +173,7 @@ class BillService:
             delete_upload(self.settings.upload_path, old_stored_filename)
         logger.info("Bill %s: id=%d status=%s total_time=%dms", "replaced" if existing else "saved",
                     bill.id, bill.validation_status, bill.processing_time_ms)
-        return bill, existing is not None
+        return bill, UploadOutcome.REPLACED if existing is not None else UploadOutcome.CREATED
 
     def _find_by_hash(self, file_hash: str) -> Bill | None:
         try:
@@ -169,13 +201,32 @@ class BillService:
             raise BillNotFoundError(f"Bill {bill_id} not found.")
         return bill
 
+    def stored_file(self, bill_id: int) -> tuple[Bill, Path]:
+        """The bill and the path of its original upload."""
+        bill = self.get(bill_id)
+        path = safe_upload_path(self.settings.upload_path, bill.stored_filename)
+        if not path.is_file():
+            raise FileNotAvailableError(f"The original file of bill #{bill.id} is no longer stored on the server.")
+        return bill, path
+
+    def preview(self, bill_id: int, page: int) -> tuple[bytes, str]:
+        bill, path = self.stored_file(bill_id)
+        return render_preview(path, bill.file_type, page)
+
     def list(self, limit: int, offset: int, status: str | None = None,
-             account_number: str | None = None) -> tuple[int, list[Bill]]:
+             account_number: str | None = None, search: str | None = None) -> tuple[int, list[Bill]]:
         query = select(Bill)
         if status:
             query = query.where(Bill.validation_status == status)
         if account_number:
             query = query.where(Bill.account_number == account_number)
+        if search and search.strip():
+            pattern = f"%{_escape_like(search.strip())}%"
+            query = query.where(or_(
+                Bill.consumer_name.ilike(pattern, escape="\\"),
+                Bill.account_number.ilike(pattern, escape="\\"),
+                Bill.original_filename.ilike(pattern, escape="\\"),
+            ))
         try:
             total = self.db.scalar(select(func.count()).select_from(query.subquery())) or 0
             items = self.db.scalars(
@@ -204,10 +255,11 @@ def _utc(value: datetime) -> datetime:
     return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
 
 
-def to_response(bill: Bill, include_raw_text: bool = True) -> BillResponse:
+def to_response(bill: Bill, include_raw_text: bool = True, saved: bool = True) -> BillResponse:
     details = ValidationDetails.model_validate(bill.validation_details or {"status": bill.validation_status})
     return BillResponse(
         id=bill.id,
+        saved=saved,
         original_filename=bill.original_filename,
         file_type=bill.file_type,
         consumer_name=bill.consumer_name,
@@ -230,8 +282,8 @@ def to_response(bill: Bill, include_raw_text: bool = True) -> BillResponse:
         parser_name=bill.parser_name,
         field_sources=bill.field_sources or {},
         raw_ocr_text=bill.raw_ocr_text if include_raw_text else None,
-        created_at=_utc(bill.created_at),
-        updated_at=_utc(bill.updated_at),
+        created_at=_utc(bill.created_at) if bill.created_at else None,  # None: never stored
+        updated_at=_utc(bill.updated_at) if bill.updated_at else None,
     )
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Literal
 
 from fastapi import APIRouter, Depends, File, Query, Response, UploadFile, status
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -14,7 +15,7 @@ from app.schemas.bill import (
     RawTextResponse,
     TariffInput,
 )
-from app.services.bill_service import BillService, to_response, to_summary, to_tariff_input
+from app.services.bill_service import BillService, UploadOutcome, to_response, to_summary, to_tariff_input
 
 router = APIRouter(prefix="/api/bills", tags=["bills"])
 
@@ -37,15 +38,20 @@ def get_bill_service(db: Session = Depends(get_db)) -> BillService:
         "Accepts a PDF, PNG or JPEG electricity bill (multipart field `file`). "
         "Runs the full pipeline - text extraction / OCR, parsing, normalisation and "
         "validation - stores the result and returns it. Fields that could not be "
-        "extracted confidently are `null` and listed in `warnings`. A bill whose "
-        "values fail validation is still stored, with `validation_status` WARNING or INVALID.\n\n"
+        "extracted confidently are `null` and listed in `warnings`; such a bill is stored "
+        "with `validation_status` WARNING.\n\n"
+        "**INVALID** documents (nothing extractable, e.g. not a bill, or contradictory values) "
+        "are returned with 200 and `saved: false`, `id: null`: the extracted data is shown, "
+        "but neither the data nor the file is stored.\n\n"
         "**Duplicates:** uploading a file that is already stored returns 409 `duplicate_file` with "
         "`existing_bill_id`; repeat with `replace=true` to re-process that bill in place (200, same id). "
         "A different file with the same account number and billing period as a stored bill is saved "
         "with a WARNING and `validation_details.possible_duplicate_of`."
     ),
     responses={
-        200: {"model": BillResponse, "description": "`replace=true`: the existing bill was re-processed"},
+        200: {"model": BillResponse,
+              "description": "INVALID document, not stored (`saved: false`); or, with `replace=true`, "
+                             "the existing bill was re-processed"},
         400: {"model": ErrorResponse, "description": "Empty file or content/extension mismatch"},
         409: {"model": ErrorResponse, "description": "This file is already stored (see existing_bill_id)"},
         413: {"model": ErrorResponse, "description": "File larger than MAX_UPLOAD_SIZE_MB"},
@@ -63,10 +69,10 @@ def upload_bill(
 ) -> BillResponse:
     # Read at most limit+1 bytes so oversized uploads are rejected without loading them fully
     data = file.file.read(get_settings().max_upload_bytes + 1)
-    bill, replaced = service.process_upload(file.filename, file.content_type, data, replace=replace)
-    if replaced:
+    bill, outcome = service.process_upload(file.filename, file.content_type, data, replace=replace)
+    if outcome is not UploadOutcome.CREATED:
         response.status_code = status.HTTP_200_OK
-    return to_response(bill)
+    return to_response(bill, saved=outcome is not UploadOutcome.NOT_SAVED)
 
 
 @router.get(
@@ -81,9 +87,11 @@ def list_bills(
     offset: int = Query(0, ge=0),
     validation_status: Literal["VALID", "WARNING", "INVALID"] | None = Query(None),
     account_number: str | None = Query(None, max_length=64),
+    search: str | None = Query(None, max_length=100,
+                               description="Part of the consumer name, account number or file name"),
     service: BillService = Depends(get_bill_service),
 ) -> BillListResponse:
-    total, items = service.list(limit, offset, validation_status, account_number)
+    total, items = service.list(limit, offset, validation_status, account_number, search)
     return BillListResponse(total=total, limit=limit, offset=offset, items=[to_summary(b) for b in items])
 
 
@@ -102,6 +110,42 @@ def get_bill(bill_id: int, service: BillService = Depends(get_bill_service)) -> 
 def get_raw_text(bill_id: int, service: BillService = Depends(get_bill_service)) -> RawTextResponse:
     bill = service.get(bill_id)
     return RawTextResponse(id=bill.id, extraction_method=bill.extraction_method, raw_ocr_text=bill.raw_ocr_text)
+
+
+_FILE_ERRORS = {
+    **_ERRORS,
+    404: {"model": ErrorResponse, "description": "Bill, stored file (file_not_available) or page not found"},
+}
+# Versioned URLs (?v=<updated_at>) let browsers cache page images; nosniff keeps uploads from being reinterpreted
+_FILE_HEADERS = {"Cache-Control": "private, max-age=86400", "X-Content-Type-Options": "nosniff"}
+_MEDIA_TYPES = {"pdf": "application/pdf", "png": "image/png", "jpeg": "image/jpeg"}
+
+
+@router.get(
+    "/{bill_id}/preview",
+    response_class=Response,
+    summary="Image of one page of the original bill",
+    description="PNG of a PDF page (rendered server-side, so no PDF viewer is needed) or a downscaled "
+                "JPEG of an uploaded photo. `file_not_available` if the host no longer has the file.",
+    responses={200: {"content": {"image/png": {}, "image/jpeg": {}}, "description": "Page image"}, **_FILE_ERRORS},
+)
+def get_preview(bill_id: int, page: int = Query(1, ge=1, le=100),
+                service: BillService = Depends(get_bill_service)) -> Response:
+    content, media_type = service.preview(bill_id, page)
+    return Response(content, media_type=media_type, headers=_FILE_HEADERS)
+
+
+@router.get(
+    "/{bill_id}/file",
+    response_class=FileResponse,
+    summary="The original uploaded file",
+    responses={200: {"content": {"application/pdf": {}, "image/png": {}, "image/jpeg": {}},
+                     "description": "Original file"}, **_FILE_ERRORS},
+)
+def get_file(bill_id: int, service: BillService = Depends(get_bill_service)) -> FileResponse:
+    bill, path = service.stored_file(bill_id)
+    return FileResponse(path, media_type=_MEDIA_TYPES.get(bill.file_type, "application/octet-stream"),
+                        filename=bill.original_filename, content_disposition_type="inline", headers=_FILE_HEADERS)
 
 
 @router.get(

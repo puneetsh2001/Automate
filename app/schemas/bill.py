@@ -77,7 +77,8 @@ class BillSummary(BaseModel):
 class BillResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    id: int
+    id: int | None = Field(..., description="null when the document was not saved (INVALID)")
+    saved: bool = Field(True, description="False for an INVALID upload: shown, but nothing was stored")
     original_filename: str
     file_type: str
 
@@ -104,8 +105,8 @@ class BillResponse(BaseModel):
     field_sources: dict[str, str] = Field(default_factory=dict, description="How each field was located")
 
     raw_ocr_text: str | None = Field(None, description="Included on upload and single-bill fetch")
-    created_at: datetime
-    updated_at: datetime
+    created_at: datetime | None = Field(..., description="null when the document was not saved")
+    updated_at: datetime | None = Field(..., description="null when the document was not saved")
 
 
 class BillListResponse(BaseModel):

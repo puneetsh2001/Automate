@@ -77,3 +77,15 @@ class DatabaseUnavailableError(BillOCRError):
 class BillNotFoundError(BillOCRError):
     status_code = 404
     error_code = "bill_not_found"
+
+
+class FileNotAvailableError(BillOCRError):
+    """The bill exists but its original upload is gone (e.g. a host with a temporary disk)."""
+
+    status_code = 404
+    error_code = "file_not_available"
+
+
+class PageNotFoundError(BillOCRError):
+    status_code = 404
+    error_code = "page_not_found"

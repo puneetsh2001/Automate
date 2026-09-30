@@ -35,6 +35,7 @@ def test_upload_text_pdf_full_lifecycle(client, sample_dir, settings):
     r = upload(client, "my bill.pdf", data, "application/pdf")
     assert r.status_code == 201, r.text
     bill = r.json()
+    assert bill["saved"] is True
     assert bill["consumer_name"] == "RAMESH KUMAR SHARMA"
     assert bill["account_number"] == "170012345678"
     assert bill["billing_period"] == "2025-05-01 to 2025-05-31"
@@ -246,6 +247,107 @@ def test_same_bill_in_a_different_file_is_flagged_not_blocked(client):
             for line in MAY_BILL]
     r = upload(client, "june.pdf", _text_pdf(june), "application/pdf")
     assert r.json()["validation_status"] == "VALID"               # next month of the same account is fine
+
+
+def test_preview_and_original_file(client, settings):
+    doc = fitz.open()
+    for i in range(2):
+        doc.new_page().insert_text((50, 72), f"Consumer Name: PAGE TEST {i + 1}\nSome filler text for the text layer.")
+    pdf = doc.tobytes()
+    bill = upload(client, "two pages.pdf", pdf, "application/pdf").json()
+
+    page1 = client.get(f"/api/bills/{bill['id']}/preview")
+    assert page1.status_code == 200
+    assert page1.headers["content-type"] == "image/png"
+    assert page1.content.startswith(b"\x89PNG")
+    assert client.get(f"/api/bills/{bill['id']}/preview", params={"page": 2}).status_code == 200
+    missing_page = client.get(f"/api/bills/{bill['id']}/preview", params={"page": 3})
+    assert missing_page.status_code == 404 and missing_page.json()["error"] == "page_not_found"
+
+    original = client.get(f"/api/bills/{bill['id']}/file")
+    assert original.status_code == 200
+    assert original.headers["content-type"] == "application/pdf"
+    assert original.headers["content-disposition"].startswith("inline")
+    assert original.content == pdf
+
+    # A host with a temporary disk may lose the file: the data stays, the preview says why
+    for stored in settings.upload_path.glob("*.pdf"):
+        stored.unlink()
+    gone = client.get(f"/api/bills/{bill['id']}/preview")
+    assert gone.status_code == 404 and gone.json()["error"] == "file_not_available"
+    assert client.get(f"/api/bills/{bill['id']}/file").json()["error"] == "file_not_available"
+    assert client.get(f"/api/bills/{bill['id']}").status_code == 200
+
+
+@requires_tesseract
+def test_preview_of_photo_is_a_jpeg(client):
+    bill_id = upload(client, "photo.png", _render_bill_image("PNG"), "image/png").json()["id"]
+    r = client.get(f"/api/bills/{bill_id}/preview")
+    assert r.status_code == 200 and r.headers["content-type"] == "image/jpeg"
+    assert client.get(f"/api/bills/{bill_id}/preview", params={"page": 2}).status_code == 404
+
+
+def test_photo_preview_is_downscaled_and_flattened(tmp_path):
+    from app.services.preview_service import render_preview
+
+    path = tmp_path / "photo.png"
+    Image.new("RGBA", (3000, 2000), (255, 255, 255, 0)).save(path)   # transparent phone-sized image
+    content, media_type = render_preview(path, "png", 1)
+    image = Image.open(io.BytesIO(content))
+    assert media_type == "image/jpeg"
+    assert max(image.size) == 1600 and image.mode == "RGB"          # light enough for the browser
+    assert min(image.getpixel((10, 10))) > 245                      # transparency became white
+
+
+def test_invalid_document_is_shown_but_not_saved(client, settings):
+    stored_before = set(settings.upload_path.glob("*"))
+    resume = _text_pdf(["Curriculum Vitae", "Skills: Python, FastAPI, SQL",
+                        "Experience: three years of backend development work."])
+    r = upload(client, "resume.pdf", resume, "application/pdf")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["saved"] is False
+    assert body["id"] is None and body["created_at"] is None
+    assert body["validation_status"] == "INVALID"
+    assert "No bill fields could be extracted from the document." in body["warnings"]
+    assert "Curriculum Vitae" in body["raw_ocr_text"]                # what was read is still shown
+    assert client.get("/api/bills").json()["total"] == 0             # no data stored ...
+    assert set(settings.upload_path.glob("*")) == stored_before       # ... and no file kept
+    # Nothing was stored, so the same file is processed again rather than reported as a duplicate
+    assert upload(client, "resume.pdf", resume, "application/pdf").json()["saved"] is False
+
+
+def test_bill_with_contradictory_values_is_not_saved(client):
+    pdf = _text_pdf([line.replace("Previous Reading: 1000", "Previous Reading: 1350")
+                          .replace("Current Reading: 1350", "Current Reading: 1000") for line in MAY_BILL])
+    body = upload(client, "reversed.pdf", pdf, "application/pdf").json()
+    assert body["saved"] is False and body["validation_status"] == "INVALID"
+    assert body["account_number"] == "123456789"                     # extracted values are returned
+    assert any("lower than previous reading" in w for w in body["warnings"])
+    assert client.get("/api/bills").json()["total"] == 0
+
+
+def test_preview_of_unknown_bill_is_404(client):
+    assert client.get("/api/bills/999999/preview").json()["error"] == "bill_not_found"
+
+
+def test_search_bills(client):
+    for name, acct, file in [("RAMESH KUMAR SHARMA", "111122223333", "may_bill 100%.pdf"),
+                             ("SUNITA DEVI", "444455556666", "june-bill.pdf")]:
+        pdf = _text_pdf([f"Consumer Name: {name}", f"Account No: {acct}",
+                         "Some other text to make the page text layer long enough."])
+        assert upload(client, file, pdf, "application/pdf").status_code == 201
+
+    def found(term):
+        return [b["account_number"] for b in client.get("/api/bills", params={"search": term}).json()["items"]]
+
+    assert found("sunita") == ["444455556666"]        # consumer name, any case
+    assert found("1111222") == ["111122223333"]       # part of the account number
+    assert found("JUNE-BILL") == ["444455556666"]     # file name
+    assert found("100%") == ["111122223333"]          # % and _ match literally
+    assert found("_") == ["111122223333"]
+    assert found("nobody") == []
+    assert len(found("  ")) == 2                      # blank search = no filter
 
 
 def _render_bill_image(fmt: str) -> bytes:

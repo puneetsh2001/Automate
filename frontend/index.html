@@ -4,98 +4,257 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Electricity Bill OCR</title>
+  <meta name="description" content="Extract and validate data from electricity bills (PDF, PNG, JPG).">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%234f46e5'/%3E%3Cpath d='M17.5 6 9 18h6l-1.5 8L23 14h-6z' fill='white'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <header class="topbar">
-    <h1>Electricity Bill OCR</h1>
-    <nav>
-      <span id="health" class="health" title="Service health">checking…</span>
-      <a href="/docs" target="_blank" rel="noopener">API docs</a>
-    </nav>
+    <div class="topbar-inner">
+      <a class="brand" href="/">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path d="M13.2 2 5 13.5h5.6L9.4 22 19 9.8h-5.7z" fill="currentColor"/></svg>
+        </span>
+        <span class="brand-text">
+          <span class="brand-name">Electricity Bill OCR</span>
+          <span class="brand-sub">Bill data extraction</span>
+        </span>
+      </a>
+      <nav class="topnav">
+        <span id="health" class="health" title="Service health">
+          <span class="health-dot" aria-hidden="true"></span><span id="health-text">Checking…</span>
+        </span>
+        <a class="btn btn-ghost btn-sm" href="/docs" target="_blank" rel="noopener">API docs</a>
+      </nav>
+    </div>
   </header>
 
-  <main>
-    <section class="card">
-      <h2>Upload a bill</h2>
-      <form id="upload-form">
+  <main class="container">
+    <div class="page-head">
+      <h1>Extract bill data</h1>
+      <p>Upload a PDF or a photo of an electricity bill. The key fields are read, checked against the meter readings and saved.</p>
+    </div>
+
+    <!-- Upload -->
+    <section class="card upload-card" aria-label="Upload a bill">
+      <form id="upload-form" class="upload-form">
         <label id="dropzone" class="dropzone" for="file-input">
           <input id="file-input" type="file" name="file" accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg">
-          <span id="dropzone-text">Drag &amp; drop a PDF, PNG or JPG here, or <u>browse</u></span>
+          <span id="dz-empty" class="dz-empty">
+            <span class="dz-title">Drop your bill here</span>
+            <span class="dz-sub">PDF, PNG or JPG, up to 10 MB</span>
+            <span class="btn btn-secondary btn-sm dz-browse">Browse files</span>
+          </span>
+          <span id="dz-file" class="dz-file" hidden>
+            <span id="file-type" class="file-type">PDF</span>
+            <span class="file-meta">
+              <span id="file-name" class="file-name"></span>
+              <span id="file-size" class="file-size"></span>
+            </span>
+            <button id="file-clear" type="button" class="icon-btn" aria-label="Remove selected file" title="Remove file">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+            </button>
+          </span>
         </label>
-        <button id="upload-btn" type="submit" disabled>Upload &amp; extract</button>
+        <div class="upload-actions">
+          <p class="upload-hint">Scanned bills and photos are read with OCR and can take up to a minute.</p>
+          <button id="upload-btn" type="submit" class="btn btn-primary" disabled>Upload &amp; extract</button>
+        </div>
       </form>
 
-      <div id="duplicate" class="alert alert-warning" role="alert" hidden>
-        <strong id="duplicate-message"></strong>
-        <p class="alert-hint">Replace extracts the data from this file again and overwrites that bill.</p>
-        <div class="alert-actions">
-          <button id="duplicate-view" type="button" class="secondary">View existing bill</button>
-          <button id="duplicate-replace" type="button">Replace</button>
+      <div id="progress" class="progress" hidden>
+        <ol id="steps" class="stepper">
+          <li data-step="upload"><span class="step-dot"></span><span class="step-label">Upload</span></li>
+          <li data-step="ocr"><span class="step-dot"></span><span class="step-label">Read document</span></li>
+          <li data-step="extract"><span class="step-dot"></span><span class="step-label">Extract fields</span></li>
+          <li data-step="validate"><span class="step-dot"></span><span class="step-label">Validate</span></li>
+        </ol>
+        <p id="progress-text" class="progress-text" aria-live="polite"></p>
+      </div>
+
+      <div id="error" class="callout callout-error" role="alert" hidden>
+        <svg class="callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/></svg>
+        <div class="callout-body"><p id="error-text" class="callout-text"></p></div>
+      </div>
+
+      <div id="duplicate" class="callout callout-warning" role="alert" hidden>
+        <svg class="callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></svg>
+        <div class="callout-body">
+          <p id="duplicate-message" class="callout-title"></p>
+          <p class="callout-text">Replace reads this file again and overwrites that bill, keeping its number.</p>
+          <div class="callout-actions">
+            <button id="duplicate-view" type="button" class="btn btn-secondary btn-sm">View existing bill</button>
+            <button id="duplicate-replace" type="button" class="btn btn-primary btn-sm">Replace</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Result -->
+    <section id="result" class="result" aria-label="Extracted bill" hidden>
+      <div id="not-saved" class="callout callout-error not-saved" role="status" hidden>
+        <svg class="callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/></svg>
+        <div class="callout-body">
+          <p class="callout-title">Not saved: this document is invalid</p>
+          <p class="callout-text">The data read from it is shown below, but neither the data nor the file was stored.</p>
+          <ul id="not-saved-reasons" class="callout-list"></ul>
+        </div>
+      </div>
+      <div class="card summary">
+        <div class="summary-main">
+          <div class="summary-top">
+            <span id="status-badge" class="badge"></span>
+            <span id="summary-fields" class="summary-fields"></span>
+          </div>
+          <h2 id="summary-name" class="summary-name"></h2>
+          <p id="result-meta" class="summary-meta"></p>
+          <dl id="summary-facts" class="summary-facts"></dl>
+        </div>
+        <div class="summary-amount">
+          <span class="summary-amount-label">Net amount due</span>
+          <span id="summary-amount" class="summary-amount-value"></span>
+          <span id="summary-due" class="summary-amount-sub"></span>
         </div>
       </div>
 
-      <ol id="steps" class="steps" hidden>
-        <li data-step="upload">Uploading &amp; processing…</li>
-        <li data-step="ocr">OCR completed</li>
-        <li data-step="extract">Data extraction completed</li>
-        <li data-step="validate">Validation completed</li>
-      </ol>
+      <div class="result-grid">
+        <section class="card preview-card" aria-label="Document preview">
+          <div class="card-head">
+            <h3>Document</h3>
+            <div class="preview-tools">
+              <div id="pager" class="pager" hidden>
+                <button id="page-prev" type="button" class="icon-btn" aria-label="Previous page">
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m15 18-6-6 6-6"/></svg>
+                </button>
+                <span id="page-label" class="pager-label"></span>
+                <button id="page-next" type="button" class="icon-btn" aria-label="Next page">
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m9 18 6-6-6-6"/></svg>
+                </button>
+              </div>
+              <a id="open-original" class="btn btn-ghost btn-sm" target="_blank" rel="noopener">Open original</a>
+            </div>
+          </div>
+          <div class="preview-body">
+            <div id="preview-loading" class="preview-skeleton skeleton" aria-label="Loading preview"></div>
+            <img id="preview-img" class="preview-img" alt="" hidden>
+            <iframe id="preview-frame" class="preview-frame" title="Document preview" hidden></iframe>
+            <div id="preview-empty" class="preview-empty" hidden>
+              <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/></svg>
+              <p class="preview-empty-title">Preview not available</p>
+              <p id="preview-empty-text" class="preview-empty-text"></p>
+            </div>
+          </div>
+        </section>
 
-      <div id="error" class="alert alert-error" role="alert" hidden></div>
+        <section class="card details-card" aria-label="Extraction details">
+          <div class="tabs" role="tablist" aria-label="Extraction details">
+            <button id="tab-data" class="tab" type="button" role="tab" aria-selected="true" aria-controls="panel-data">Extracted data</button>
+            <button id="tab-text" class="tab" type="button" role="tab" aria-selected="false" aria-controls="panel-text" tabindex="-1">Document text</button>
+            <button id="tab-json" class="tab" type="button" role="tab" aria-selected="false" aria-controls="panel-json" tabindex="-1">JSON</button>
+          </div>
+
+          <div id="panel-data" class="tab-panel" role="tabpanel" aria-labelledby="tab-data">
+            <div id="stats" class="stats"></div>
+            <div id="meter-check" class="meter-check"></div>
+            <div id="warnings" class="callout callout-warning" hidden>
+              <svg class="callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg>
+              <div class="callout-body">
+                <p class="callout-title">Needs review</p>
+                <ul id="warnings-list" class="callout-list"></ul>
+                <div id="duplicate-links" class="callout-actions" hidden></div>
+              </div>
+            </div>
+            <div class="table-frame">
+              <table class="fields">
+                <thead><tr><th scope="col">Field</th><th scope="col">Value</th><th scope="col" class="col-source">Found via</th></tr></thead>
+                <tbody id="fields-body"></tbody>
+              </table>
+            </div>
+            <div id="notes" class="callout callout-info" hidden>
+              <svg class="callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+              <div class="callout-body">
+                <p class="callout-title">How values were derived</p>
+                <ul id="notes-list" class="callout-list"></ul>
+              </div>
+            </div>
+          </div>
+
+          <div id="panel-text" class="tab-panel" role="tabpanel" aria-labelledby="tab-text" hidden>
+            <div class="panel-toolbar">
+              <span id="text-meta" class="muted"></span>
+              <button id="copy-text" type="button" class="btn btn-secondary btn-sm">Copy text</button>
+            </div>
+            <pre id="raw-text" class="code-view lines"></pre>
+          </div>
+
+          <div id="panel-json" class="tab-panel" role="tabpanel" aria-labelledby="tab-json" hidden>
+            <div class="panel-toolbar">
+              <span class="muted">Extracted fields and validation result</span>
+              <span class="toolbar-actions">
+                <button id="copy-json" type="button" class="btn btn-secondary btn-sm">Copy</button>
+                <button id="download-json" type="button" class="btn btn-secondary btn-sm">Download</button>
+              </span>
+            </div>
+            <pre id="json-view" class="code-view"></pre>
+          </div>
+        </section>
+      </div>
     </section>
 
-    <section id="result" class="card" hidden>
-      <div class="result-head">
-        <h2>Extracted data</h2>
-        <span id="status-badge" class="badge"></span>
-      </div>
-      <p id="result-meta" class="muted"></p>
-
-      <table class="fields">
-        <tbody id="fields-body"></tbody>
-      </table>
-
-      <div id="meter-check" class="meter-check"></div>
-
-      <div id="notes" class="alert alert-info" hidden>
-        <strong>How values were derived</strong>
-        <ul id="notes-list"></ul>
-      </div>
-
-      <div id="warnings" class="alert alert-warning" hidden>
-        <strong>Warnings</strong>
-        <ul id="warnings-list"></ul>
-        <p id="duplicate-links" class="alert-actions" hidden></p>
-      </div>
-
-      <details class="raw">
-        <summary>Raw OCR text (debug)</summary>
-        <pre id="raw-text"></pre>
-      </details>
-    </section>
-
-    <section class="card">
-      <div class="result-head">
-        <h2>Recent bills</h2>
-        <button id="refresh-btn" type="button" class="secondary">Refresh</button>
+    <!-- History -->
+    <section class="card history-card" aria-labelledby="history-title">
+      <div class="card-head history-head">
+        <div>
+          <h2 id="history-title">Recent bills</h2>
+          <p id="history-count" class="card-sub">Loading…</p>
+        </div>
+        <div class="history-tools">
+          <label class="search">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+            <input id="history-search" type="search" placeholder="Search name, account or file" aria-label="Search bills" autocomplete="off">
+          </label>
+          <div id="status-filter" class="segmented" role="group" aria-label="Filter by status">
+            <button type="button" data-status="" aria-pressed="true">All</button>
+            <button type="button" data-status="VALID" aria-pressed="false">Valid</button>
+            <button type="button" data-status="WARNING" aria-pressed="false">Warning</button>
+          </div>
+          <button id="refresh-btn" type="button" class="icon-btn icon-btn-bordered" aria-label="Refresh list" title="Refresh">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+          </button>
+        </div>
       </div>
       <div class="table-wrap">
-        <table class="history">
+        <table class="data-table">
           <thead>
             <tr>
-              <th>ID</th><th>File</th><th>Consumer</th><th>Account</th><th>Period</th>
-              <th class="num">Units</th><th class="num">Amount (₹)</th><th>Status</th><th></th>
+              <th scope="col">Bill</th>
+              <th scope="col">Consumer</th>
+              <th scope="col">Account</th>
+              <th scope="col">Period</th>
+              <th scope="col" class="num">Units (kWh)</th>
+              <th scope="col" class="num">Amount</th>
+              <th scope="col">Status</th>
+              <th scope="col">Uploaded</th>
+              <th scope="col"><span class="visually-hidden">Actions</span></th>
             </tr>
           </thead>
-          <tbody id="history-body">
-            <tr><td colspan="9" class="muted">Loading…</td></tr>
-          </tbody>
+          <tbody id="history-body"></tbody>
         </table>
+      </div>
+      <div id="history-foot" class="table-foot" hidden>
+        <span id="page-info" class="muted"></span>
+        <span class="toolbar-actions">
+          <button id="hist-prev" type="button" class="btn btn-secondary btn-sm">Previous</button>
+          <button id="hist-next" type="button" class="btn btn-secondary btn-sm">Next</button>
+        </span>
       </div>
     </section>
   </main>
 
+  <div id="toasts" class="toasts" aria-live="polite"></div>
   <script src="app.js"></script>
 </body>
 </html>
