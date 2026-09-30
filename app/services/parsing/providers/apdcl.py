@@ -53,6 +53,17 @@ _PRINTED_DECIMALS = 3
 _RESOLUTION = Decimal("0.001")
 
 
+# In register, open-access and unit rows a comma between digits can only be the decimal point
+# (these columns have no thousands separators). Tesseract builds differ: "41767399,420",
+# "41767399,.420", "18868299, 780" (the last splits the number into two tokens).
+_DECIMAL_MARK_RE = re.compile(r"(\d)\s?[,.]*,[,.]*\s?(\d{3})(?!\d)")
+
+
+def _clean(line: str) -> str:
+    """Undo OCR decimal-mark slips in a register / open-access / unit row (never amount rows)."""
+    return _DECIMAL_MARK_RE.sub(r"\1.\2", line)
+
+
 def _value(token: str | None) -> Decimal | None:
     """A reading, MF or unit value. APDCL always prints exactly 3 decimals ("40268001.280",
     "1.000"), so OCR slips can be undone: a comma for the point ("41767399,420") or a lost
@@ -80,7 +91,7 @@ class APDCLParser(GenericBillParser):
         lines = normalize_text(raw_text).split("\n")
         self._consumer_name(lines, bill)
 
-        rows = [m for m in (_METER_ROW_RE.match(line) for line in lines) if m]
+        rows = [m for m in (_METER_ROW_RE.match(_clean(line)) for line in lines) if m]
         if not rows:
             return bill  # not the TOD layout: keep the generic result
         clear_meter_fields(bill)
@@ -115,7 +126,7 @@ class APDCLParser(GenericBillParser):
 
         open_access = [_value(m["v"].replace(" ", "."))
                        for line in lines if _OPEN_ACCESS_LINE_RE.search(line)
-                       for m in _OPEN_ACCESS_VALUE_RE.finditer(line)]
+                       for m in _OPEN_ACCESS_VALUE_RE.finditer(_clean(line))]
         open_access = [v for v in open_access if v is not None]
         if open_access:
             set_field(bill, "open_access_units", sum(open_access, Decimal(0)), "apdcl:Open Access Units")
@@ -158,12 +169,12 @@ class APDCLParser(GenericBillParser):
         for zone in zones:
             row_re = re.compile(rf"^\s*{re.escape(zone)}\s*\|?\s*(?P<v>{NUM})?(?:\s|$)", re.IGNORECASE)
             for i in range(start + 1, min(start + 12, len(lines))):
-                m = row_re.match(lines[i])
+                m = row_re.match(_clean(lines[i]))
                 if not m:
                     continue
                 value = _value(m["v"])
                 if value is None and i + 1 < len(lines):  # value wrapped onto the next line
-                    nxt = _LONE_NUMBER_RE.match(lines[i + 1])
+                    nxt = _LONE_NUMBER_RE.match(_clean(lines[i + 1]))
                     value = _value(nxt["v"]) if nxt else None
                 if value is not None:
                     values.append(value)

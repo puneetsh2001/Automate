@@ -112,6 +112,8 @@ def test_apdcl_bill_read_by_ocr(parser):
 
 @pytest.mark.parametrize("printed, ocr_read", [
     ("1600.000", "1600,000"),   # decimal point read as a comma
+    ("1600.000", "1600,.000"),  # comma and point (Tesseract on the Linux server)
+    ("2300.000", "2300, 000"),  # comma and a space: one number split into two tokens
     ("300.000 ", "300000 "),    # decimal point lost (difference column)
     ("200.000", "200000"),      # decimal point lost (open-access units)
     ("1.000  ", "1000   "),     # decimal point lost (MF)
@@ -208,6 +210,29 @@ def test_karnataka_escom_bill(parser):
     assert bill.units_consumed == Decimal("87500")
     assert bill.net_amount_due == Decimal("950000.00")     # "Say Rs." rounded payable
     assert ValidationService().validate(bill).status == ValidationStatus.VALID
+
+
+def test_karnataka_escom_bill_read_by_ocr(parser):
+    """Scanned image: "EHT 9" read as "EHTS"-style letters, "16th" as "46th", "Main M R" as "MainMR"."""
+    text = (GESCOM_TEXT.replace("R.R. No:       EHT 9", "R.R. No:        EHTS")
+            .replace("16th of", "46th of").replace("Main MR ", "MainMR  "))
+    bill = parser.parse(text)
+    assert bill.parser_name == "karnataka_escom"       # detected from the label, value unreadable
+    assert bill.account_number == "EHT 5"               # S -> 5 after the supply category
+    assert bill.due_date == date(2026, 1, 16)
+    assert any("taken as 16" in note for note in bill.notes)
+    assert bill.units_consumed == Decimal("87500")
+    assert bill.net_amount_due == Decimal("950000.00")
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("EHT 9", "EHT 9"), ("EHT9", "EHT 9"), ("EHTS", "EHT 5"), ("HT 12O", "HT 120"),
+    ("LT 4567", "LT 4567"), ("123456789", "123456789"), ("Tariff", None),
+])
+def test_karnataka_rr_number(raw, expected):
+    from app.services.parsing.providers.karnataka_escom import _rr_number
+
+    assert _rr_number(raw) == expected
 
 
 def test_non_bill_document_extracts_nothing(parser):

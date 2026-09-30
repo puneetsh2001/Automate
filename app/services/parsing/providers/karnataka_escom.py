@@ -27,7 +27,13 @@ from app.services.parsing.normalization import MONTHS, normalize_text, parse_amo
 from app.services.parsing.providers.common import NUM, clear_meter_fields, find_line, num, set_field
 
 _DETECT_RE = re.compile(r"\b(?:GESCOM|BESCOM|HESCOM|MESCOM|CESC(?:OM)?)\b|Electricity\s+Supply\s+Company", re.IGNORECASE)
-_RR_RE = re.compile(r"R\.?\s*R\.?\s*No\.?\s*[:\-]?\s*(?P<v>[A-Z]{1,6}\s?\d{1,10}|\d{3,15})", re.IGNORECASE)
+_RR_LABEL_RE = re.compile(r"R\.?\s*R\.?\s*No\b", re.IGNORECASE)
+# The value after the label: one token, or a prefix and a number ("EHT 9"); validated by _rr_number
+_RR_RE = re.compile(r"R\.?\s*R\.?\s*No\.?\s*[:\-]?\s*(?P<v>[A-Z0-9|]{1,15}(?: [A-Z0-9|]{1,10})?)", re.IGNORECASE)
+# Supply category + number: EHT 9, HT 123, LT 4567. Only digits can follow the category,
+# so OCR letter/digit confusions there are safe to undo ("EHTS" is EHT 5).
+_RR_CATEGORY_RE = re.compile(r"^(?P<cat>EHT|HT|LT)\s?(?P<num>[0-9SOIlBZ|]{1,10})$", re.IGNORECASE)
+_RR_DIGIT_FIXES = str.maketrans({"S": "5", "O": "0", "I": "1", "L": "1", "|": "1", "B": "8", "Z": "2"})
 _MONTH_OF_RE = re.compile(r"for\s+the\s+Month\s+of\s*[:\-]?\s*(?P<v>.+)$", re.IGNORECASE)
 _FIRM_RE = re.compile(r"Name\s+of\s+the\s+(?:Firm|Consumer)\s*[:\-]?\s*(?P<v>.+)$", re.IGNORECASE)
 _DUE_RE = re.compile(
@@ -49,7 +55,7 @@ class KarnatakaEscomParser(GenericBillParser):
     @classmethod
     def detect(cls, text: str) -> bool:
         text = text or ""
-        return bool(_DETECT_RE.search(text) and _RR_RE.search(text))
+        return bool(_DETECT_RE.search(text) and _RR_LABEL_RE.search(text))
 
     def parse(self, raw_text: str) -> ParsedBill:
         bill = super().parse(raw_text)
@@ -61,8 +67,8 @@ class KarnatakaEscomParser(GenericBillParser):
             if m := _FIRM_RE.search(line):
                 set_field(bill, "consumer_name", parse_name(m["v"]), "karnataka:Name of the Firm")
                 break
-        if m := _RR_RE.search(text):
-            set_field(bill, "account_number", re.sub(r"\s+", " ", m["v"]).upper(), "karnataka:R.R. No")
+        if (m := _RR_RE.search(text)) and (rr := _rr_number(m["v"])):
+            set_field(bill, "account_number", rr, "karnataka:R.R. No")
         for line in lines:
             if (m := _MONTH_OF_RE.search(line)) and (period := parse_billing_period(re.sub(r"\s+", " ", m["v"]))):
                 bill.billing_period, bill.billing_period_start, bill.billing_period_end = period
@@ -88,8 +94,13 @@ class KarnatakaEscomParser(GenericBillParser):
             bill_year, bill_month = period_month
             year = bill_year + 1 if month < bill_month else bill_year
             bill.notes.append(f"Due date year ({year}) taken from the bill month; the bill prints only day and month")
+        day = int(m["d"])
+        if day > 31 and m["d"].startswith("4") and 1 <= int("1" + m["d"][1:]) <= 31:
+            # Tesseract reads the "1" of scanned "16th" as "4": "46th" can't be a day
+            day = int("1" + m["d"][1:])
+            bill.notes.append(f"Due date day read by OCR as '{m['d']}', taken as {day}; please verify")
         try:
-            set_field(bill, "due_date", date(year, month, int(m["d"])), "karnataka:Last Date of Payment")
+            set_field(bill, "due_date", date(year, month, day), "karnataka:Last Date of Payment")
         except ValueError:
             pass
 
@@ -119,6 +130,17 @@ class KarnatakaEscomParser(GenericBillParser):
             if idx is not None and (m := rx.search(lines[idx])) and (amount := parse_amount(m["v"])) is not None:
                 set_field(bill, "net_amount_due", amount, source)
                 return
+
+
+def _rr_number(raw: str) -> str | None:
+    """R.R. number as "EHT 5" / "HT 123", or a plain number; None if it isn't one."""
+    raw = raw.strip()
+    if m := _RR_CATEGORY_RE.match(raw):
+        number = m["num"].upper().translate(_RR_DIGIT_FIXES)
+        return f"{m['cat'].upper()} {number}" if number.isdigit() else None
+    if m := re.fullmatch(r"([A-Z]{1,6}) ?(\d{1,10})", raw, re.IGNORECASE):
+        return f"{m.group(1).upper()} {m.group(2)}"
+    return raw if re.fullmatch(r"\d{3,15}", raw) else None
 
 
 def _period_month(period: str | None) -> tuple[int, int] | None:
