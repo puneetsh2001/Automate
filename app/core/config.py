@@ -45,6 +45,9 @@ class Settings(BaseSettings):
     OCR_OEM: int = 1
     # auto = try light + binarized preprocessing, keep the better result
     OCR_PREPROCESS_MODE: str = Field(default="auto", pattern="^(auto|light|binary|none)$")
+    # auto: the binarized pass (for unevenly lit photos) only runs when the first pass's
+    # mean word confidence is below this; on clear scans it never found more and doubled the time
+    OCR_SECOND_PASS_BELOW_CONFIDENCE: float = 80.0
     OCR_TIMEOUT_SECONDS: int = 120
     OCR_LOW_CONFIDENCE_THRESHOLD: float = 60.0
 

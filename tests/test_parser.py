@@ -443,6 +443,27 @@ def test_deskew_levels_rotated_page():
     assert abs(estimate_skew(np.asarray(img))) <= 0.2
 
 
+@pytest.mark.parametrize("confidence, passes", [(90.0, 1), (60.0, 2)])
+def test_second_ocr_pass_only_when_first_is_unsure(confidence, passes):
+    """The binarized pass doubles OCR time; it only runs when the first pass is unsure."""
+    from PIL import Image
+
+    from app.core.config import get_settings
+    from app.services.ocr_service import OCRProvider, OCRResult, OCRService
+    from app.utils.text_layout import Word
+
+    class FakeProvider(OCRProvider):
+        calls = 0
+
+        def recognize(self, image):
+            FakeProvider.calls += 1
+            return OCRResult(text="x", words=[Word("Units", 0, 0, 10, 10, confidence)], mean_confidence=confidence)
+
+    settings = get_settings().model_copy(update={"OCR_PREPROCESS_MODE": "auto", "OCR_TIMEOUT_SECONDS": 300})
+    OCRService(FakeProvider(), settings).extract(Image.new("L", (200, 100), 255))
+    assert FakeProvider.calls == passes
+
+
 def test_slow_host_skips_second_ocr_pass(monkeypatch):
     """On a throttled CPU the binary pass is skipped once the first pass used half the timeout."""
     from PIL import Image

@@ -107,5 +107,18 @@ def health(db: Session = Depends(get_db)) -> HealthResponse:
                           ocr_detail=ocr_detail, version=__version__)
 
 
+class RevalidatingStaticFiles(StaticFiles):
+    """UI files that browsers re-check on every load (a cheap 304 when unchanged).
+
+    Without a Cache-Control header browsers guess a cache lifetime, and after a
+    deploy could combine the new index.html with an old style.css / app.js.
+    """
+
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 # Static UI last so it never shadows /api, /docs or /health
-app.mount("/", StaticFiles(directory=BASE_DIR / "frontend", html=True), name="frontend")
+app.mount("/", RevalidatingStaticFiles(directory=BASE_DIR / "frontend", html=True), name="frontend")

@@ -145,7 +145,8 @@ All settings come from environment variables or `.env`. See `.env.example` for t
 | `TESSERACT_CMD` | auto-detect | path to `tesseract.exe` |
 | `OCR_LANGUAGE` | `eng` | Tesseract language(s), e.g. `eng+hin` |
 | `OCR_PSM` | `3` | Tesseract page segmentation mode |
-| `OCR_PREPROCESS_MODE` | `auto` | `auto` (try light + binary, keep best) / `light` / `binary` / `none` |
+| `OCR_PREPROCESS_MODE` | `auto` | `auto` (light pass; binary pass too only if the first is unsure, keep best) / `light` / `binary` / `none` |
+| `OCR_SECOND_PASS_BELOW_CONFIDENCE` | `80` | `auto` mode runs the second (binarized) pass only when the first pass's mean confidence is below this |
 | `OCR_LOW_CONFIDENCE_THRESHOLD` | `60` | mean OCR confidence below this adds a warning |
 | `PDF_RENDER_DPI` | `300` | DPI for rendering scanned PDF pages |
 | `PDF_TEXT_MIN_CHARS` | `50` | a PDF page needs this many text chars to skip OCR |
@@ -276,7 +277,7 @@ No tariff rules are implemented. That work belongs to a later, state-specific mo
    - Otherwise the page is rendered at 300 DPI and OCR'd. Mixed PDFs (some text pages, some scanned) are handled, and the bill is marked `extraction_method: "mixed"`.
 3. **Image preprocessing** (`image_preprocessing.py`, each step a small function):
    `grayscale (EXIF-rotated, transparency flattened) → rescale to ~3000 px → median denoise → deskew (±8°) → remove table ruling lines`.
-   A second variant also binarizes the image (Otsu, or adaptive thresholding for unevenly lit photos). In `auto` mode both variants are OCR'd and the one with the higher confidence-weighted word score wins, so aggressive thresholding is never forced on an image it would damage.
+   A second variant also binarizes the image (Otsu, or adaptive thresholding for unevenly lit photos). In `auto` mode the light variant is OCR'd first; only if its mean word confidence is below `OCR_SECOND_PASS_BELOW_CONFIDENCE` (80) is the binarized variant OCR'd too, and the one with the higher confidence-weighted word score wins. On clear scans and screenshots the second pass never found more, so skipping it roughly halves OCR time, and aggressive thresholding is never forced on an image it would damage.
 4. **Tesseract** (`--oem 1 --psm 3`) returns words with bounding boxes and confidences.
 5. **Layout reconstruction** (`text_layout.py`) puts the words back into visual rows. Column gaps become 2+ spaces, so table headers stay aligned above their values. This is what the table parser relies on.
 6. The raw text is stored untouched in `raw_ocr_text`.
@@ -390,8 +391,8 @@ Current result: **45/45 fields and statuses correct.** Regenerate the bills with
 | `venv\Scripts\activate` is blocked | `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` |
 | `ModuleNotFoundError: app` when running alembic or scripts | Run commands from the `electricity_bill_ocr` folder with the venv activated. |
 | A field is `null` but visible on the bill | Open the raw OCR text. If the text is right, the label is probably unknown: add it to `parsing/aliases.py` or `LABEL_ALIASES_FILE`. If the text is garbled, try a sharper scan (≥ 300 DPI) or `OCR_PREPROCESS_MODE=binary`. |
-| On the hosted app, a scanned bill fails with `ocr_failed` / "OCR timed out" | The free server's CPU is much slower than a PC. The Dockerfile already runs Tesseract single-threaded with a 300 s timeout. Check the Render logs for `OCR pass variant=... took Ns`; if it is still too slow, set `OCR_PREPROCESS_MODE=binary` (one pass) or `PDF_RENDER_DPI=200` in Render → Environment. |
-| Very slow OCR | Scanned PDFs take ~2–3 s per page. Reduce `PDF_RENDER_DPI` to 200, or set `OCR_PREPROCESS_MODE=light` (one OCR pass instead of two). |
+| On the hosted app, a scanned bill fails with `ocr_failed` / "OCR timed out" | The free server's CPU is much slower than a PC. The Dockerfile already runs Tesseract single-threaded with a 300 s timeout. Check the Render logs for `OCR pass variant=... took Ns`; if it is still too slow, set `PDF_RENDER_DPI=200` in Render → Environment. |
+| Very slow OCR | Scanned PDFs take ~2–3 s per page. Reduce `PDF_RENDER_DPI` to 200, or set `OCR_PREPROCESS_MODE=light` (never a second pass). |
 | Port 8000 in use | `$env:PORT=8001; python run.py` |
 
 Server logs (console) show each step: upload, per-page OCR timing, parse results (which fields were missing), validation status, DB save, and errors with tracebacks.

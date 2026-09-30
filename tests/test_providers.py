@@ -75,6 +75,70 @@ def test_apdcl_missing_zone_value_gives_null_not_partial_sum(parser):
     assert result.status == ValidationStatus.VALID          # MF is printed on the bill
 
 
+# The same bill as a phone photo / compressed PNG: Tesseract reads the thin "0" export cells as
+# "tt)" / "LY)", one MF as "1,000", a decimal point as a space, and wraps an open-access label.
+APDCL_OCR_TEXT = """
+                                         Assam Power Distribution Company Limited
+website : www.apdcl.org
+ Consumer Name: ACME STEELS NORTH-EAST PRIVATE    Consumer Number: 006099990001                  Bill Amount: 1234567.00
+ Address: Somewhere, Kamrup (M)                                                                  Due Date: 27-April-2026
+                                                                                                 Bill Period: 01-Mar-2026 To 31-Mar-2026
+ Reading Type     Meter Number     MF              Previous         Previous Export  CurrentReading  Current Export  Difference
+ KWH(Solar)       Q0000001         1.000           1000.000         tt)              1600.000         0                600.000          0
+ KWH(Peak)        Q0000001         1,000           2000.000         LY)              2300.000         0                300.000          0
+ KWH(Normal)      Q0000001         1.000           3000.000         LY)              3900.000         0                900.000          LY)
+                                                                                     Open Access
+ Open Access Units Solar  500 000              Open Access Units Peak   200.000               Units        700.000
+ Unit Consumed      PF Penalty/Rebate  LT Metering        DTR Penalty       Billable Units in
+ Solar |100.000  = -3.000             0                  0                 94.000
+ Peak | 100.000     -3.000             0                  0                 94.000
+ Normal |           -6.000             0                  0                 188.000
+ 200.000
+ KWh: Kilo Watt Hour           Transformer M D Charge : Transformer Maintenance & Depreciation Charge
+"""
+
+
+def test_apdcl_bill_read_by_ocr(parser):
+    bill = parser.parse(APDCL_OCR_TEXT)
+    assert bill.parser_name == "apdcl"
+    assert bill.multiplying_factor == Decimal("1.000")         # "1,000" is the MF 1.000, not 1000
+    assert bill.previous_reading == Decimal("6000.000")
+    assert bill.current_reading == Decimal("7800.000")
+    assert bill.open_access_units == Decimal("1400.000")       # "500 000" + 200 + wrapped "Normal" 700
+    assert bill.units_consumed == Decimal("400.000")
+    result = ValidationService().validate(bill)
+    assert result.status == ValidationStatus.VALID and result.meter_reading_check is True
+
+
+@pytest.mark.parametrize("printed, ocr_read", [
+    ("1600.000", "1600,000"),   # decimal point read as a comma
+    ("300.000 ", "300000 "),    # decimal point lost (difference column)
+    ("200.000", "200000"),      # decimal point lost (open-access units)
+    ("1.000  ", "1000   "),     # decimal point lost (MF)
+])
+def test_apdcl_ocr_decimal_slips_are_undone(parser, printed, ocr_read):
+    bill = parser.parse(APDCL_OCR_TEXT.replace(printed, ocr_read, 1))
+    assert bill.previous_reading == Decimal("6000.000")
+    assert bill.current_reading == Decimal("7800.000")
+    assert bill.multiplying_factor == Decimal("1.000")
+    assert bill.units_consumed == Decimal("400.000")
+    assert ValidationService().validate(bill).meter_reading_check is True
+
+
+def test_apdcl_unreadable_register_row_gives_no_readings(parser):
+    text = APDCL_OCR_TEXT.replace("KWH(Normal)      Q0000001         1.000", "KWH(Normal)  ~~ garbled ~~")
+    bill = parser.parse(text)
+    assert bill.previous_reading is None and bill.units_consumed is None   # never a 2-of-3 register sum
+    assert any("could not be read" in note for note in bill.notes)
+
+
+def test_apdcl_register_with_misread_digit_gives_no_readings(parser):
+    text = APDCL_OCR_TEXT.replace("2300.000", "2800.000")   # current - previous no longer = difference
+    bill = parser.parse(text)
+    assert bill.previous_reading is None and bill.current_reading is None
+    assert any("don't add up" in note for note in bill.notes)
+
+
 JVVNL_TEXT = """
                                                     JAIPUR VIDYUT VITRAN NIGAM LIMITED.
     K No:       210000000001       Acc No:      90000001    Consumer Status:       R         Bill No:    080000001

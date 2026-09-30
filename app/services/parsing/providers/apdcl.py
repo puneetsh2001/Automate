@@ -30,13 +30,41 @@ from app.services.parsing.normalization import normalize_text, parse_name, split
 from app.services.parsing.providers.common import NUM, clear_meter_fields, find_line, num, set_field
 
 _DETECT_RE = re.compile(r"Assam\s+Power\s+Distribution|www\.apdcl\.org", re.IGNORECASE)
+# The export columns aren't needed for the calculation and are thin cells holding "0",
+# which OCR reads as "tt)" / "LY)": accept any short token there.
 _METER_ROW_RE = re.compile(
     rf"^\s*KWH\s*(?:\((?P<zone>[A-Za-z\- ]+)\))?\s+(?P<meter>\S+)\s+(?P<mf>{NUM})\s+(?P<prev>{NUM})\s+"
-    rf"(?P<prev_exp>{NUM})\s+(?P<curr>{NUM})\s+(?P<curr_exp>{NUM})\s+(?P<diff>{NUM})",
+    rf"(?P<prev_exp>\S{{1,12}})\s+(?P<curr>{NUM})\s+(?P<curr_exp>\S{{1,12}})\s+(?P<diff>{NUM})",
     re.IGNORECASE,
 )
-_OPEN_ACCESS_RE = re.compile(rf"Open\s+Access\s+Units(?:\s+[A-Za-z]+)?\s+(?P<v>{NUM})", re.IGNORECASE)
+# On lines mentioning "Open Access": each "Units [Solar|Peak|Normal]" label and its value. The
+# label may wrap ("Open Access" / "Units ... Normal"), and OCR can read "1464884.000" as "1464884 000".
+_OPEN_ACCESS_LINE_RE = re.compile(r"Open\s+Access", re.IGNORECASE)
+_OPEN_ACCESS_VALUE_RE = re.compile(
+    rf"\bUnits(?:\s+[A-Za-z\-]+)?\s+(?P<v>{NUM}(?:\s\d{{3}}(?=\s{{2}}|$))?)", re.IGNORECASE
+)
 _LONE_NUMBER_RE = re.compile(rf"^\s*(?P<v>{NUM})\s*$")
+
+
+# A register row, readable or not: "KWH(Solar) ..." or "KWH  <meter no>  <MF>" - not the
+# glossary line "KWh: Kilo Watt Hour" at the foot of the bill
+_KWH_LINE_RE = re.compile(r"^\s*KWH\s*(?:\(|\s\S+\s+\d)", re.IGNORECASE)
+_PRINTED_DECIMALS = 3
+_RESOLUTION = Decimal("0.001")
+
+
+def _value(token: str | None) -> Decimal | None:
+    """A reading, MF or unit value. APDCL always prints exactly 3 decimals ("40268001.280",
+    "1.000"), so OCR slips can be undone: a comma for the point ("41767399,420") or a lost
+    point ("1499398140"). Callers cross-check the result (current - previous = difference)."""
+    if token is None:
+        return None
+    token = token.strip()
+    if re.fullmatch(rf"\d+,\d{{{_PRINTED_DECIMALS}}}", token):
+        token = token.replace(",", ".")
+    elif re.fullmatch(rf"\d{{{_PRINTED_DECIMALS + 1},}}", token):
+        token = f"{token[:-_PRINTED_DECIMALS]}.{token[-_PRINTED_DECIMALS:]}"
+    return num(token)
 
 
 class APDCLParser(GenericBillParser):
@@ -57,12 +85,25 @@ class APDCLParser(GenericBillParser):
             return bill  # not the TOD layout: keep the generic result
         clear_meter_fields(bill)
 
-        mfs = {num(r["mf"]) for r in rows}
+        # A register row OCR couldn't read would make the sums partial
+        if len(rows) != sum(bool(_KWH_LINE_RE.match(line)) for line in lines):
+            bill.notes.append("A meter register row could not be read; readings not combined")
+            return bill
+        # Each register must satisfy current - previous = difference; a digit misread by OCR
+        # breaks that, and a missing reading is better than a wrong one
+        for r in rows:
+            prev_r, curr_r, diff_r = _value(r["prev"]), _value(r["curr"]), _value(r["diff"])
+            if None in (prev_r, curr_r, diff_r) or abs((curr_r - prev_r) - diff_r) > _RESOLUTION:
+                bill.notes.append(f"Readings of register {r['zone'] or 'KWH'} don't add up "
+                                  "(current - previous ≠ difference); readings not taken")
+                return bill
+
+        mfs = {_value(r["mf"]) for r in rows}
         if len(mfs) != 1:
             bill.notes.append("Meter registers use different multiplying factors; readings not combined")
             return bill
-        prev = sum((num(r["prev"]) for r in rows), Decimal(0))
-        curr = sum((num(r["curr"]) for r in rows), Decimal(0))
+        prev = sum((_value(r["prev"]) for r in rows), Decimal(0))
+        curr = sum((_value(r["curr"]) for r in rows), Decimal(0))
         zones = [r["zone"] or "KWH" for r in rows]
         set_field(bill, "previous_reading", prev, "apdcl:sum of KWH registers")
         set_field(bill, "current_reading", curr, "apdcl:sum of KWH registers")
@@ -72,7 +113,10 @@ class APDCLParser(GenericBillParser):
         if any(num(r["prev_exp"]) or num(r["curr_exp"]) for r in rows):
             bill.notes.append("Export readings are present (net metering); units shown are import consumption")
 
-        open_access = [num(m["v"]) for m in _OPEN_ACCESS_RE.finditer("\n".join(lines))]
+        open_access = [_value(m["v"].replace(" ", "."))
+                       for line in lines if _OPEN_ACCESS_LINE_RE.search(line)
+                       for m in _OPEN_ACCESS_VALUE_RE.finditer(line)]
+        open_access = [v for v in open_access if v is not None]
         if open_access:
             set_field(bill, "open_access_units", sum(open_access, Decimal(0)), "apdcl:Open Access Units")
 
@@ -117,10 +161,10 @@ class APDCLParser(GenericBillParser):
                 m = row_re.match(lines[i])
                 if not m:
                     continue
-                value = num(m["v"])
+                value = _value(m["v"])
                 if value is None and i + 1 < len(lines):  # value wrapped onto the next line
                     nxt = _LONE_NUMBER_RE.match(lines[i + 1])
-                    value = num(nxt["v"]) if nxt else None
+                    value = _value(nxt["v"]) if nxt else None
                 if value is not None:
                     values.append(value)
                 break

@@ -23,6 +23,13 @@ def test_frontend_is_served(client):
     assert "Electricity Bill OCR" in r.text
 
 
+def test_ui_files_are_revalidated_so_deploys_never_mix_versions(client):
+    page = client.get("/")
+    assert 'href="style.css?v=' in page.text and 'src="app.js?v=' in page.text
+    for path in ["/", "/style.css", "/app.js"]:
+        assert client.get(path).headers["cache-control"] == "no-cache"
+
+
 def test_openapi_documents_endpoints(client):
     paths = client.get("/openapi.json").json()["paths"]
     for p in ["/api/bills/upload", "/api/bills", "/api/bills/{bill_id}",

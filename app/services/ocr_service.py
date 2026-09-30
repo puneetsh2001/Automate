@@ -139,6 +139,11 @@ class OCRService:
         light = None
         for variant in variants:
             elapsed = time.perf_counter() - start
+            if best is not None and best.words and (best.mean_confidence or 0) >= \
+                    self.settings.OCR_SECOND_PASS_BELOW_CONFIDENCE:
+                logger.info("Skipping OCR variant=%s: first pass is confident (mean_conf=%s)",
+                            variant, best.mean_confidence)
+                break
             if best is not None and best.words and elapsed > self.settings.OCR_TIMEOUT_SECONDS / 2:
                 # Slow host (e.g. a throttled free-tier CPU): keep the usable first result
                 logger.info("Skipping OCR variant=%s: first pass already took %.1fs", variant, elapsed)
